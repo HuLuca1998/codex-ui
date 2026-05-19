@@ -1,0 +1,6 @@
+# 构建产物（由 启动脚本.sh / 打包macOS-App.sh 重新生成）
+/codex-ui
+/Codex Viewer.app/
+
+# macOS
+.DS_Store
