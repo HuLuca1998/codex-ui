@@ -568,6 +568,7 @@ function funcCall(p,o){
   }
   const c=card({ic:"⚙",iccls:"tool",lbl:p.name||"工具调用",sub,stat:"运行中",statcls:"run",body,obj:o});
   ctx.tools.set(p.call_id,{card:c,out:outTarget,shell:isShell});
+  applyPair(p.call_id);
   return{cat:"tool",node:c};
 }
 function fillOutput(id,text,ok){
@@ -596,6 +597,7 @@ function parseOut(text){
 function funcOutput(p,o){
   const{text,ok}=parseOut(p.output||"");
   if(fillOutput(p.call_id,text,ok))return null;
+  if(pairs&&pairs.calls.has(p.call_id))return null; // 调用在其它窗口，由其卡片填充
   return{cat:"tool",node:card({ic:"⮑",iccls:"tool",lbl:"工具输出",sub:firstLine(text),
     body:h("div",{class:"argblk",text}),obj:o})};
 }
@@ -608,11 +610,13 @@ function customCall(p,o){
   const outT=h("div",{class:"term"});outT.style.borderTop="1px solid rgba(255,255,255,.04)";
   c.querySelector(".cbody").insertBefore(outT,c.querySelector(".raw"));
   ctx.tools.set(p.call_id,{card:c,out:outT,shell:false});
+  applyPair(p.call_id);
   return{cat:"tool",node:c};
 }
 function customOutput(p,o){
   const{text,ok}=parseOut(p.output||"");
   if(fillOutput(p.call_id,text,ok))return null;
+  if(pairs&&pairs.calls.has(p.call_id))return null;
   return{cat:"tool",node:card({ic:"⮑",iccls:"tool",lbl:"工具输出",sub:firstLine(text),
     body:h("div",{class:"argblk",text}),obj:o})};
 }
@@ -740,6 +744,7 @@ function claudeToolUse(b,o){
   const c=card({ic:isBash?"›_":isEdit?"◈":"⚙",iccls:isBash?"exec":isEdit?"patch":"tool",
     lbl:name,sub,stat:"运行中",statcls:"run",body,obj:o});
   ctx.tools.set(b.id,{card:c,out:outTarget,shell});
+  applyPair(b.id);
   return{cat:"tool",node:c};
 }
 function claudeToolSub(name,inp){
@@ -769,6 +774,7 @@ function claudeResultText(c){
 function claudeToolResult(b,o){
   const text=claudeResultText(b.content),ok=!b.is_error;
   if(fillOutput(b.tool_use_id,text,ok))return null;
+  if(pairs&&pairs.calls.has(b.tool_use_id))return null; // 调用在其它窗口
   return{cat:"tool",node:card({ic:"⮑",iccls:"tool",lbl:"工具结果",sub:firstLine(text),
     stat:ok?"完成":"失败",statcls:ok?"ok":"err",body:h("div",{class:"argblk",text}),obj:o})};
 }
@@ -778,42 +784,93 @@ function claudeSysSub(o){
   return o.level||o.content||"";
 }
 
-function appendEvents(list,isLive){
-  const tl=$("#timeline"),q=$("#q2").value.trim().toLowerCase();
-  const claude=curSummary&&curSummary.source==="claude";
-  for(const o of list){
-    if(claude)tallyClaude(o);else tallyCodex(o);
-    if(isLive)stat.events++;
-    let r;try{r=claude?renderClaudeEvent(o):renderEvent(o);}catch(e){r=null;}
-    if(!r)continue;
-    const txt=JSON.stringify(o).slice(0,4000).toLowerCase();
-    for(const item of (Array.isArray(r)?r:[r])){
-      if(!item||!item.node)continue;
-      let node=item.node;
-      if(!node.classList.contains("ev")){const w=h("div",{class:"ev"});w.append(node);node=w;}
-      node.dataset.cat=item.cat;
-      node.dataset.text=txt;
-      if(!filters[item.cat])node.classList.add("hidden");
-      if(q&&!txt.includes(q))node.classList.add("hideF");
-      tl.append(node);
+/* ── 时间线：窗口化渲染（仅渲染最新一段，向上滚动加载更早） ── */
+let allEvents=[], renderedFrom=0, winClaude=false, pairs=null, loadingOlder=false;
+const WIN=100; // 每次渲染/加载的事件数
+
+function tallyOne(o,claude){ claude?tallyClaude(o):tallyCodex(o); }
+
+// 预扫描：建立工具调用↔输出配对（与渲染顺序无关，使任意窗口都能正确配对）
+function buildPairs(events,claude){
+  const out=new Map(),calls=new Set();
+  for(const o of events){
+    if(claude){
+      if(o.type==="assistant"){
+        for(const b of (o.message&&o.message.content)||[])
+          if(b&&b.type==="tool_use"&&b.id)calls.add(b.id);
+      }else if(o.type==="user"&&Array.isArray(o.message&&o.message.content)){
+        for(const b of o.message.content)
+          if(b&&b.type==="tool_result"&&b.tool_use_id)
+            out.set(b.tool_use_id,{text:claudeResultText(b.content),ok:!b.is_error});
+      }
+    }else if(o.type==="response_item"){
+      const p=o.payload||{};
+      if((p.type==="function_call"||p.type==="custom_tool_call"||p.type==="local_shell_call")&&p.call_id)
+        calls.add(p.call_id);
+      else if((p.type==="function_call_output"||p.type==="custom_tool_call_output")&&p.call_id)
+        out.set(p.call_id,parseOut(p.output||""));
     }
   }
+  return {out,calls};
+}
+// 工具卡片创建后，若预扫描已知其输出则立即填充
+function applyPair(id){
+  if(pairs&&pairs.out.has(id)){const r=pairs.out.get(id);fillOutput(id,r.text,r.ok);}
+}
+
+// 渲染单个事件，追加到 parent
+function appendOne(o,parent,claude){
+  let r;try{r=claude?renderClaudeEvent(o):renderEvent(o);}catch(e){r=null;}
+  if(!r)return;
+  const txt=JSON.stringify(o).slice(0,4000).toLowerCase();
+  const q=composerMode?"":$("#q2").value.trim().toLowerCase();
+  for(const item of (Array.isArray(r)?r:[r])){
+    if(!item||!item.node)continue;
+    let node=item.node;
+    if(!node.classList.contains("ev")){const w=h("div",{class:"ev"});w.append(node);node=w;}
+    node.dataset.cat=item.cat;
+    node.dataset.text=txt;
+    if(!filters[item.cat])node.classList.add("hidden");
+    if(q&&!txt.includes(q))node.classList.add("hideF");
+    parent.append(node);
+  }
+}
+// 向上加载更早的一段（保持视觉位置不跳动）
+function loadOlder(){
+  if(loadingOlder||renderedFrom<=0)return;
+  loadingOlder=true;
+  const sc=$("#scroll"),tl=$("#timeline");
+  const prevH=sc.scrollHeight,prevTop=sc.scrollTop;
+  const from=Math.max(0,renderedFrom-WIN);
+  const frag=document.createDocumentFragment();
+  for(let i=from;i<renderedFrom;i++)appendOne(allEvents[i],frag,winClaude);
+  tl.insertBefore(frag,tl.querySelector(".ev"));
+  renderedFrom=from;
+  sc.scrollTop=prevTop+(sc.scrollHeight-prevH);
+  loadingOlder=false;
+}
+function appendEvents(list){ // 仅实时增量，追加到末尾
+  const tl=$("#timeline");
+  for(const o of list){stat.events++;tallyOne(o,winClaude);appendOne(o,tl,winClaude);}
 }
 function renderSession(d){
   ctx={tools:new Map()};
-  stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
   curSummary=d.summary;
-  setComposer((d.summary||{}).source==="codex"); // Codex 会话=编写器，否则=查找
+  winClaude=(d.summary||{}).source==="claude";
+  allEvents=d.events||[];
+  pairs=buildPairs(allEvents,winClaude);
+  stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
+  for(const o of allEvents)tallyOne(o,winClaude); // 全量统计（与窗口无关）
+  setComposer(!winClaude); // Codex 会话=编写器，Claude=查找
   const tl=$("#timeline");tl.innerHTML="";
   $("#empty").style.display="none";
   tl.style.display="block";
-  if(d.truncated){
-    tl.append(h("div",{class:"trunc"},
-      "大会话 —— 仅载入最近 "+num((d.events||[]).length)+" 条事件，共 "+num(d.total)+" 条"));
-  }
-  appendEvents(d.events||[],false);
+  if(d.truncated)tl.append(h("div",{class:"trunc"},
+    "更早的事件未载入（会话过大，共 "+num(d.total)+" 条）"));
+  renderedFrom=Math.max(0,allEvents.length-WIN); // 只渲染最新窗口
+  for(let i=renderedFrom;i<allEvents.length;i++)appendOne(allEvents[i],tl,winClaude);
   drawHeader();
-  requestAnimationFrame(()=>{$("#scroll").scrollTop=$("#scroll").scrollHeight;});
+  const sc=$("#scroll");sc.scrollTop=sc.scrollHeight;
 }
 function drawHeader(){
   const s=curSummary||{};
@@ -914,33 +971,55 @@ function inRange(mtime){
   }
   return true;
 }
+// 构建单个会话列表项
+function buildItem(s){
+  const it=h("div",{class:"item"+(s.id===currentId?" sel":""),onclick:()=>openSession(s.id)});
+  it.append(h("div",{class:"flex items-center gap-2"},
+    h("span",{class:"dot "+(s.active?"live":"idle")}),
+    h("span",{class:"ttl",text:s.title||"(无标题会话)"})));
+  if(s.preview)it.append(h("div",{class:"prev",text:s.preview}));
+  const meta=h("div",{class:"metaline flex items-center gap-2"},
+    h("span",{class:"tag tag-"+s.source,text:s.source}),
+    relTime(s.mtime));
+  if(s.agentRole)meta.append(h("span",{class:"badge",text:s.agentRole}));
+  if(s.sid)meta.append(h("span",{class:"font-mono text-[#4a4a52] ml-auto",
+    text:shortSid(s.sid)}));
+  it.append(meta);
+  return it;
+}
+// 列表增量渲染：每次只建一段 DOM，向下滚动再补
+let listRows=[], listShown=0;
+const LIST_CHUNK=120;
+function listChunk(){
+  const lst=$("#list"),frag=document.createDocumentFragment();
+  const end=Math.min(listShown+LIST_CHUNK,listRows.length);
+  for(let i=listShown;i<end;i++)frag.append(buildItem(listRows[i]));
+  lst.append(frag);
+  listShown=end;
+}
 function renderList(){
   refreshProjects();
   const q=$("#q").value.trim().toLowerCase();
-  const all=[...sessions.values()].sort((a,b)=>b.mtime-a.mtime);
-  const list=$("#list");list.innerHTML="";
-  let shown=0;
-  for(const s of all){
-    if(srcFilter!=="all"&&s.source!==srcFilter)continue;
-    if(srcFilter==="claude"&&projectFilter!=="all"&&claudeProject(s)!==projectFilter)continue;
-    if(!inRange(s.mtime))continue;
-    if(q&&!((s.title||"")+(s.preview||"")+(s.cwd||"")).toLowerCase().includes(q))continue;
-    shown++;
-    const it=h("div",{class:"item"+(s.id===currentId?" sel":""),onclick:()=>openSession(s.id)});
-    it.append(h("div",{class:"flex items-center gap-2"},
-      h("span",{class:"dot "+(s.active?"live":"idle")}),
-      h("span",{class:"ttl",text:s.title||"(无标题会话)"})));
-    if(s.preview)it.append(h("div",{class:"prev",text:s.preview}));
-    const meta=h("div",{class:"metaline flex items-center gap-2"},
-      h("span",{class:"tag tag-"+s.source,text:s.source}),
-      relTime(s.mtime));
-    if(s.agentRole)meta.append(h("span",{class:"badge",text:s.agentRole}));
-    if(s.sid)meta.append(h("span",{class:"font-mono text-[#4a4a52] ml-auto",
-      text:shortSid(s.sid)}));
-    it.append(meta);
-    list.append(it);
-  }
-  $("#sCount").textContent=shown;
+  listRows=[...sessions.values()].sort((a,b)=>b.mtime-a.mtime).filter(s=>{
+    if(srcFilter!=="all"&&s.source!==srcFilter)return false;
+    if(srcFilter==="claude"&&projectFilter!=="all"&&claudeProject(s)!==projectFilter)return false;
+    if(!inRange(s.mtime))return false;
+    if(q&&!((s.title||"")+(s.preview||"")+(s.cwd||"")).toLowerCase().includes(q))return false;
+    return true;
+  });
+  const lst=$("#list"),keepTop=lst.scrollTop;
+  lst.innerHTML="";listShown=0;
+  $("#sCount").textContent=listRows.length;
+  listChunk();
+  // 渲染足够多块以恢复原滚动位置
+  while(listShown<listRows.length&&lst.scrollHeight<keepTop+lst.clientHeight+240)listChunk();
+  lst.scrollTop=keepTop;
+}
+// 防抖刷新（搜索 / SSE 用）
+let listTimer=null;
+function scheduleList(){
+  if(listTimer)return;
+  listTimer=setTimeout(()=>{listTimer=null;renderList();},180);
 }
 
 async function openSession(id){
@@ -965,11 +1044,11 @@ function connectStream(){
     let d;try{d=JSON.parse(ev.data);}catch(e){return;}
     if(d.t==="session"){
       sessions.set(d.session.id,d.session);
-      renderList();
+      scheduleList(); // 防抖刷新会话列表
       if(d.session.id===currentId){curSummary=d.session;drawHeader();}
     }else if(d.t==="append"&&d.id===currentId){
       const tl=$("#timeline"),before=tl.children.length;
-      appendEvents(d.events,true);
+      appendEvents(d.events);
       drawHeader();
       for(let i=before;i<tl.children.length;i++)tl.children[i].classList.add("glow");
       const sc=$("#scroll");
@@ -987,7 +1066,12 @@ function connectStream(){
 }
 
 /* ── 交互 ── */
-$("#q").addEventListener("input",renderList);
+$("#q").addEventListener("input",scheduleList);
+$("#list").addEventListener("scroll",()=>{
+  const lst=$("#list"); // 向下滚动补充更多会话项
+  if(listShown<listRows.length&&lst.scrollHeight-lst.scrollTop-lst.clientHeight<320)
+    listChunk();
+});
 document.querySelectorAll(".dpill[data-range]").forEach(b=>{
   b.addEventListener("click",()=>{
     dateFilter=b.dataset.range;
@@ -1054,6 +1138,7 @@ $("#scroll").addEventListener("scroll",()=>{
   if(sc.scrollHeight-sc.scrollTop-sc.clientHeight<160){
     pendingNew=0;$("#jump").classList.add("hidden");$("#jump").classList.remove("flex");
   }
+  if(sc.scrollTop<240)loadOlder(); // 滚到顶部附近加载更早的事件
 });
 
 /* ── 启动 ── */
