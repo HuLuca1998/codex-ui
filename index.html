@@ -264,13 +264,16 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     <div class="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(780px,calc(100%-56px))]">
       <div class="flex flex-col rounded-[20px] bg-[#171718]/85 backdrop-blur-2xl
                   ring-1 ring-white/[0.07] shadow-[0_24px_60px_-16px_rgba(0,0,0,.8)]">
-        <!-- 输入行 -->
-        <div class="flex items-start gap-2.5 px-4 pt-3 pb-2.5">
-          <span class="text-[#54545d] text-[13px] pt-[3px] flex-none">⌕</span>
+        <!-- 输入行：Codex 会话=消息编写器，Claude 会话=对话内查找 -->
+        <div class="flex items-end gap-2.5 px-4 pt-3 pb-2.5">
+          <span id="q2icon" class="text-[#54545d] text-[13px] pb-[3px] flex-none">⌕</span>
           <textarea id="q2" rows="1" placeholder="在当前对话中查找…"
             class="flex-1 bg-transparent outline-none resize-none text-[13px]
                    text-[#d4d4da] placeholder:text-[#54545d] leading-relaxed
                    min-w-0 max-h-[120px]"></textarea>
+          <button id="sendBtn" class="hidden flex-none w-[26px] h-[26px] rounded-[9px]
+            bg-accent text-[#0f0f10] text-[14px] font-bold items-center justify-center
+            hover:brightness-110 transition" title="发送消息（回车）">↑</button>
         </div>
         <!-- 底部工具栏：左操作 / 中状态 / 右操作 -->
         <div class="flex items-center gap-2 h-[42px] px-2.5 border-t border-white/[0.05]">
@@ -298,7 +301,7 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const sessions=new Map();
-let currentId=null, ctx=null, autoFollow=true, pendingNew=0;
+let currentId=null, ctx=null, autoFollow=true, pendingNew=0, composerMode=false;
 let curSummary=null, stat={events:0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
 const filters={chat:true,think:false,tool:false,system:false}; // 默认只显示对话
 const TOOL_TYPES={function_call:1,custom_tool_call:1,local_shell_call:1,
@@ -800,6 +803,7 @@ function renderSession(d){
   ctx={tools:new Map()};
   stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
   curSummary=d.summary;
+  setComposer((d.summary||{}).source==="codex"); // Codex 会话=编写器，否则=查找
   const tl=$("#timeline");tl.innerHTML="";
   $("#empty").style.display="none";
   tl.style.display="block";
@@ -832,6 +836,36 @@ function drawTokens(){
       '<span style="color:#3a3a42;margin:0 10px">·</span>'+
       '<span style="color:#9aa0e8">↓ 下载 '+fmtTok(stat.tokOut)+'</span>';
   }else el.innerHTML="";
+}
+// 切换底部输入框：Codex 会话=消息编写器，其它=对话内查找
+function setComposer(on){
+  composerMode=on;
+  const ta=$("#q2"),btn=$("#sendBtn"),icon=$("#q2icon");
+  ta.value="";ta.style.height="auto";
+  if(on){
+    ta.placeholder="给 Codex 发送消息，回车发送…";
+    icon.textContent="›";
+    btn.classList.remove("hidden");btn.classList.add("flex");
+  }else{
+    ta.placeholder="在当前对话中查找…";
+    icon.textContent="⌕";
+    btn.classList.add("hidden");btn.classList.remove("flex");
+  }
+}
+// 发送消息：后台运行 codex exec resume，结果经实时监控流回时间线
+async function sendMessage(){
+  if(!composerMode||!currentId)return;
+  const ta=$("#q2"),msg=ta.value.trim();
+  if(!msg)return;
+  ta.value="";ta.style.height="auto";
+  const def="给 Codex 发送消息，回车发送…";
+  try{
+    const d=await(await fetch("/api/send?id="+encodeURIComponent(currentId),
+      {method:"POST",body:msg})).json();
+    if(d.ok)ta.placeholder="✓ 已发送，Codex 正在后台处理…";
+    else{ta.placeholder="✗ "+(d.error||"发送失败");ta.value=msg;}
+  }catch(e){ta.placeholder="✗ 发送失败";ta.value=msg;}
+  setTimeout(()=>{if(composerMode)ta.placeholder=def;},3500);
 }
 
 /* ── 侧栏列表 ── */
@@ -977,11 +1011,16 @@ $("#q2").addEventListener("input",()=>{
   const ta=$("#q2"); // textarea 自动撑高
   ta.style.height="auto";
   ta.style.height=Math.min(ta.scrollHeight,120)+"px";
+  if(composerMode)return; // 编写模式不做过滤
   const q=ta.value.trim().toLowerCase();
   document.querySelectorAll("#timeline .ev").forEach(e=>{
     e.classList.toggle("hideF",q&&!(e.dataset.text||"").includes(q));
   });
 });
+$("#q2").addEventListener("keydown",e=>{
+  if(composerMode&&e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}
+});
+$("#sendBtn").addEventListener("click",sendMessage);
 document.querySelectorAll(".fpill[data-cat]").forEach(b=>{
   b.addEventListener("click",()=>{
     const c=b.dataset.cat;filters[c]=!filters[c];

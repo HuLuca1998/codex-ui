@@ -119,6 +119,7 @@ func main() {
 	mux.HandleFunc("/api/session", sessionDetailHandler)
 	mux.HandleFunc("/api/stream", streamHandler)
 	mux.HandleFunc("/api/resume", resumeHandler)
+	mux.HandleFunc("/api/send", sendHandler)
 
 	ln, port := listen()
 	if pf := os.Getenv("CODEXUI_PORTFILE"); pf != "" {
@@ -262,6 +263,53 @@ func launchITerm(cmd string) error {
 		script = "tell application \"Terminal\"\n\tactivate\n\tdo script \"" + esc + "\"\nend tell"
 	}
 	return exec.Command("osascript", "-e", script).Start()
+}
+
+// sendHandler 后台运行 codex exec resume 向 Codex 会话发送一条消息。
+// 输出全部丢弃 —— 运行结果会通过会话文件被实时监控自动捕获。
+func sendHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	msg := strings.TrimSpace(string(body))
+	mu.Lock()
+	st := states[id]
+	var sum Summary
+	if st != nil {
+		sum = st.sum
+	}
+	mu.Unlock()
+	if st == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if sum.Source != "codex" {
+		writeJSON(w, map[string]any{"ok": false, "error": "仅 Codex 会话支持发送消息"})
+		return
+	}
+	if sum.Sid == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "该会话缺少 session id"})
+		return
+	}
+	if msg == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "消息为空"})
+		return
+	}
+	sh := "codex exec resume " + shellQuote(sum.Sid) + " " + shellQuote(msg)
+	if sum.Cwd != "" {
+		sh = "cd " + shellQuote(sum.Cwd) + " && " + sh
+	}
+	// 登录 shell 取得完整 PATH；不接管 stdout/stderr（丢弃），后台跑到结束。
+	cmd := exec.Command("/bin/zsh", "-lc", sh)
+	if err := cmd.Start(); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	go cmd.Wait() // 回收进程，不读取输出
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
