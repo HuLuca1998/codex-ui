@@ -26,7 +26,10 @@ tailwind.config={theme:{extend:{
   .item .ttl{ @apply text-[13px] font-medium text-[#bdbdc4] truncate flex-1 min-w-0; }
   .item.sel .ttl{ @apply text-[#f0f0f3]; }
   .item .prev{ @apply text-[12px] leading-snug text-[#74747e] line-clamp-1; }
-  .item .metaline{ @apply text-[10.5px] text-[#54545d] tabular-nums; }
+  .item .metaline{ @apply text-[10.5px] text-[#54545d] tabular-nums
+                    flex items-center gap-1.5 whitespace-nowrap overflow-hidden; }
+  .item .mtime{ @apply flex-none whitespace-nowrap; }
+  .item .sid{ @apply font-mono text-[#4a4a52] ml-auto flex-none max-w-[116px] truncate; }
 
   .dot{ @apply w-[6px] h-[6px] rounded-full flex-none; }
   .dot.live{ @apply bg-sage; animation:breathe 2.4s ease-in-out infinite; }
@@ -38,6 +41,39 @@ tailwind.config={theme:{extend:{
   /* 顶栏元信息 */
   .pill{ @apply flex items-center gap-1.5 text-[11.5px] text-[#8a8a93] px-2.5 py-1
           rounded-full bg-white/[0.04]; }
+
+  /* 设置面板 */
+  .setrow{ @apply flex flex-col gap-2.5 p-4 rounded-[16px]
+            bg-white/[0.025] ring-1 ring-white/[0.05]; }
+  .setlbl{ @apply text-[11px] font-medium text-[#74747e] w-[30px] flex-none; }
+  .setin{ @apply flex-1 min-w-0 bg-white/[0.04] ring-1 ring-white/[0.06]
+           focus:ring-accent/40 rounded-[10px] px-3 py-1.5 text-[12.5px]
+           text-[#d4d4da] placeholder:text-[#54545d] outline-none transition; }
+  .setdel{ @apply flex-none w-[26px] h-[26px] rounded-[8px] text-[#74747e]
+            hover:bg-rose/[0.16] hover:text-rose text-[11px] transition; }
+  .snav{ @apply text-[12.5px] text-[#9a9aa3] px-3 py-2 rounded-[10px]
+          transition cursor-pointer select-none hover:bg-white/[0.04]; }
+  .snav.active{ @apply bg-accent/[0.16] text-accent font-medium; }
+  .sfield{ @apply flex items-start gap-4 py-3.5 border-b border-white/[0.04]; }
+  .sflabel{ @apply w-[150px] flex-none text-[12.5px] text-[#c8c8cf] pt-[7px]; }
+  .sfctl{ @apply flex-1 min-w-0 flex flex-col gap-1.5 items-start; }
+  .sfdesc{ @apply text-[11px] text-[#62626b] leading-relaxed; }
+  .sw{ @apply relative w-[38px] h-[22px] rounded-full bg-white/[0.12]
+        transition cursor-pointer flex-none; }
+  .sw.on{ @apply bg-accent; }
+  .swknob{ @apply absolute top-[3px] left-[3px] w-[16px] h-[16px] rounded-full
+            bg-white transition-all duration-200; }
+  .sw.on .swknob{ @apply left-[19px]; }
+  .sgrouptitle{ @apply text-[11px] font-semibold uppercase tracking-wider
+                 text-[#54545d] mt-7 mb-2; }
+  .sbtn{ @apply text-[12px] font-medium text-[#bdbdc4] bg-white/[0.05]
+          hover:bg-white/[0.09] rounded-[10px] px-3.5 py-2 transition; }
+  .sbtn.accent{ @apply text-accent bg-accent/[0.12] hover:bg-accent/[0.22]; }
+  .spre{ @apply bg-black/40 rounded-[10px] px-3.5 py-3 font-mono text-[11.5px]
+          leading-relaxed text-[#a8acb8] whitespace-pre-wrap break-words
+          max-h-[260px] overflow-auto; }
+  .schk{ @apply flex items-center gap-2 text-[12px] text-[#bdbdc4]
+          py-[3px] cursor-pointer; }
 
   /* 时间线事件 */
   .ev{ @apply mb-7; animation:rise .3s cubic-bezier(.2,.7,.2,1) both; }
@@ -224,6 +260,9 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     <div class="flex-none px-5 py-3.5 flex items-center gap-2 text-[10.5px] text-[#54545d]
                 border-t border-white/[0.04]">
       <span class="dot live"></span> 实时监听中
+      <button id="openSet" class="ml-auto w-[22px] h-[22px] rounded-[7px] text-[13px]
+        text-[#54545d] hover:text-accent hover:bg-white/[0.05] transition
+        flex items-center justify-center" title="设置">⚙</button>
     </div>
   </aside>
 
@@ -296,13 +335,33 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
   </main>
 </div>
 
+<!-- ── 设置面板：侧边栏分组 ── -->
+<div id="settings" class="hidden fixed inset-[10px] z-50 rounded-[24px] bg-[#0f0f10]
+     ring-1 ring-white/[0.06] flex flex-col overflow-hidden">
+  <div class="h-[52px] flex-none flex items-center px-6 border-b border-white/[0.05]">
+    <span class="text-[13.5px] font-semibold text-[#ededf0]">设置</span>
+  </div>
+  <div class="flex-1 min-h-0 flex">
+    <div id="setNav" class="w-[176px] flex-none border-r border-white/[0.05]
+         p-3 flex flex-col gap-1 overflow-y-auto"></div>
+    <div id="setBody" class="flex-1 min-h-0 overflow-y-auto px-7 py-5"></div>
+  </div>
+  <div class="flex-none h-[60px] flex items-center gap-3 px-6 border-t border-white/[0.05]">
+    <span id="setMsg" class="text-[11.5px] text-[#74747e] mr-auto"></span>
+    <button id="setClose" class="text-[12px] font-medium text-[#bdbdc4]
+      bg-white/[0.05] hover:bg-white/[0.09] rounded-[12px] px-4 py-2 transition">完成</button>
+    <button id="setSave" class="text-[12px] font-semibold text-[#0f0f10] bg-accent
+      hover:brightness-110 rounded-[12px] px-4 py-2 transition">保存</button>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const sessions=new Map();
 let currentId=null, ctx=null, autoFollow=true, pendingNew=0, composerMode=false;
-let curSummary=null, stat={events:0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
+let curSummary=null, stat={events:0,tools:0,tokIn:0,tokOut:0,user:0,asst:0,ctxUsed:0,ctxWin:0};
 const filters={chat:true,think:false,tool:false,system:false}; // 默认只显示对话
 const TOOL_TYPES={function_call:1,custom_tool_call:1,local_shell_call:1,
   web_search_call:1,image_generation_call:1,exec_command_end:1,patch_apply_end:1};
@@ -332,7 +391,7 @@ function clock(s){return s?new Date(s).toLocaleString("zh-CN",{month:"2-digit",d
 function hhmm(s){return s?new Date(s).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"";}
 function base(p){return p?p.split("/").filter(Boolean).pop():"";}
 function num(n){return(n||0).toLocaleString("en-US");}
-function shortSid(s){s=String(s||"");return s.length<=14?s:s.slice(0,6)+"****"+s.slice(-6);}
+function shortSid(s){s=String(s||"");return s.length<=20?s:s.slice(0,8)+"****"+s.slice(-8);}
 
 /* ── 轻量 markdown ── */
 // URL 识别：http(s):// 与 www.，仅 ASCII 字符，中文/标点自然终止
@@ -645,8 +704,12 @@ function tallyCodex(o){
   if(o.type==="event_msg"&&pt==="user_message")stat.user++;
   if(o.type==="response_item"&&pt==="message"&&p.role==="assistant")stat.asst++;
   if(o.type==="event_msg"&&pt==="token_count"){
-    const u=p.info&&p.info.total_token_usage; // 累计值，最后一条为准
+    const i=p.info||{};
+    const u=i.total_token_usage; // 累计值，最后一条为准
     if(u){stat.tokIn=u.input_tokens||0;stat.tokOut=u.output_tokens||0;}
+    const last=i.last_token_usage; // 最近一轮的输入 = 当前上下文占用
+    if(last&&last.input_tokens)stat.ctxUsed=last.input_tokens;
+    if(i.model_context_window)stat.ctxWin=i.model_context_window;
   }
 }
 function tallyClaude(o){
@@ -656,8 +719,11 @@ function tallyClaude(o){
     for(const b of c)if(b&&b.type==="tool_use")stat.tools++;
     const u=o.message&&o.message.usage; // 每条消息独立，累加
     if(u){ // 上传含缓存命中，与 Codex 累计输入口径一致
-      stat.tokIn+=(u.input_tokens||0)+(u.cache_creation_input_tokens||0)+(u.cache_read_input_tokens||0);
+      const inAll=(u.input_tokens||0)+(u.cache_creation_input_tokens||0)+(u.cache_read_input_tokens||0);
+      stat.tokIn+=inAll;
       stat.tokOut+=(u.output_tokens||0);
+      stat.ctxUsed=inAll; // 最近一条 assistant 的输入规模 = 当前上下文占用
+      stat.ctxWin=1e6;    // Claude 上下文窗口 1M
     }
   }else if(o.type==="user"){
     const c=o.message&&o.message.content;
@@ -859,7 +925,7 @@ function renderSession(d){
   winClaude=(d.summary||{}).source==="claude";
   allEvents=d.events||[];
   pairs=buildPairs(allEvents,winClaude);
-  stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0};
+  stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0,ctxUsed:0,ctxWin:0};
   for(const o of allEvents)tallyOne(o,winClaude); // 全量统计（与窗口无关）
   setComposer(!winClaude); // Codex 会话=编写器，Claude=查找
   const tl=$("#timeline");tl.innerHTML="";
@@ -887,12 +953,20 @@ function drawHeader(){
 // 工具栏中部 token 用量（上传/下载），随事件流实时更新
 function drawTokens(){
   const el=$("#tokDock");
+  const sep='<span style="color:#3a3a42;margin:0 10px">·</span>';
+  const segs=[];
   if(stat.tokIn>0||stat.tokOut>0){
-    el.innerHTML=
-      '<span style="color:#84cabb">↑ 上传 '+fmtTok(stat.tokIn)+'</span>'+
-      '<span style="color:#3a3a42;margin:0 10px">·</span>'+
-      '<span style="color:#9aa0e8">↓ 下载 '+fmtTok(stat.tokOut)+'</span>';
-  }else el.innerHTML="";
+    segs.push('<span style="color:#84cabb">↑ 上传 '+fmtTok(stat.tokIn)+'</span>');
+    segs.push('<span style="color:#9aa0e8">↓ 下载 '+fmtTok(stat.tokOut)+'</span>');
+  }
+  if(stat.ctxUsed>0&&stat.ctxWin>0){
+    const pct=stat.ctxUsed/stat.ctxWin;
+    const col=pct<0.5?'#84cabb':pct<0.8?'#d8b46a':'#e0879a';
+    segs.push('<span style="color:'+col+'" title="当前对话占用的上下文（最近一轮）">'+
+      '◰ 上下文 '+fmtTok(stat.ctxUsed)+' / '+fmtTok(stat.ctxWin)+
+      ' · '+Math.round(pct*100)+'%</span>');
+  }
+  el.innerHTML=segs.join(sep);
 }
 // 切换底部输入框：Codex 会话=消息编写器，其它=对话内查找
 function setComposer(on){
@@ -978,12 +1052,11 @@ function buildItem(s){
     h("span",{class:"dot "+(s.active?"live":"idle")}),
     h("span",{class:"ttl",text:s.title||"(无标题会话)"})));
   if(s.preview)it.append(h("div",{class:"prev",text:s.preview}));
-  const meta=h("div",{class:"metaline flex items-center gap-2"},
+  const meta=h("div",{class:"metaline"},
     h("span",{class:"tag tag-"+s.source,text:s.source}),
-    relTime(s.mtime));
+    h("span",{class:"mtime",text:relTime(s.mtime)}));
   if(s.agentRole)meta.append(h("span",{class:"badge",text:s.agentRole}));
-  if(s.sid)meta.append(h("span",{class:"font-mono text-[#4a4a52] ml-auto",
-    text:shortSid(s.sid)}));
+  if(s.sid)meta.append(h("span",{class:"sid",title:s.sid,text:shortSid(s.sid)}));
   it.append(meta);
   return it;
 }
@@ -1139,6 +1212,321 @@ $("#scroll").addEventListener("scroll",()=>{
     pendingNew=0;$("#jump").classList.add("hidden");$("#jump").classList.remove("flex");
   }
   if(sc.scrollTop<240)loadOlder(); // 滚到顶部附近加载更早的事件
+});
+
+/* ── 设置面板：侧边栏分组 ── */
+const SMODULES=[
+  {id:"gh",      name:"GitHub 账号"},
+  {id:"codex",   name:"Codex"},
+  {id:"claude",  name:"Claude"},
+  {id:"issue",   name:"Issue 过滤"},
+  {id:"general", name:"通用 · 集成"},
+  {id:"perf",    name:"性能 · 扫描"},
+  {id:"startup", name:"启动"},
+  {id:"about",   name:"关于 · 维护"},
+];
+let setCfg=null;        // 正在编辑的配置副本
+let setModule="issue";  // 当前模块
+function setMsg(t){$("#setMsg").textContent=t||"";}
+
+/* —— 表单控件 —— */
+function sField(label,desc,ctl){
+  return h("div",{class:"sfield"},
+    h("div",{class:"sflabel",text:label}),
+    h("div",{class:"sfctl"},ctl,desc?h("div",{class:"sfdesc",text:desc}):null));
+}
+function sText(val,ph,cb){
+  const i=h("input",{class:"setin",value:val==null?"":val,placeholder:ph||""});
+  i.style.width="100%";
+  i.addEventListener("input",()=>cb(i.value));
+  return i;
+}
+function sNum(val,cb){
+  const i=h("input",{class:"setin",type:"number",value:val==null?"":val});
+  i.addEventListener("input",()=>cb(parseInt(i.value,10)||0));
+  return i;
+}
+function sToggle(on,cb){
+  let v=!!on;
+  const knob=h("span",{class:"swknob"});
+  const t=h("div",{class:"sw"+(v?" on":""),role:"switch"},knob);
+  t.addEventListener("click",()=>{v=!v;t.className="sw"+(v?" on":"");cb(v);});
+  return t;
+}
+function sSelect(val,opts,cb){
+  const s=h("select",{class:"setin"});
+  s.style.width="100%";
+  opts.forEach(o=>{
+    const op=h("option",{value:o.v,text:o.t});
+    if(o.v===val)op.selected=true;
+    s.append(op);
+  });
+  s.addEventListener("change",()=>cb(s.value));
+  return s;
+}
+function sBtn(label,accent,cb){
+  return h("button",{class:"sbtn"+(accent?" accent":""),text:label,onclick:cb});
+}
+
+/* —— 仓库关联行 —— */
+function repoRow(rm){
+  rm=rm||{repo:"",localPath:"",branch:""};
+  const dlId="bl"+Math.random().toString(36).slice(2,8);
+  const dl=h("datalist",{id:dlId});
+  const repoIn=h("input",{class:"setin",value:rm.repo||"",placeholder:"owner/repo"});
+  const pathIn=h("input",{class:"setin",value:rm.localPath||"",
+    placeholder:"/Users/你/work/仓库"});
+  const branchIn=h("input",{class:"setin",value:rm.branch||"",placeholder:"主分支",list:dlId});
+  async function loadBranches(){
+    dl.innerHTML="";
+    const p=pathIn.value.trim();
+    if(!p)return;
+    try{
+      const r=await(await fetch("/api/branches?path="+encodeURIComponent(p))).json();
+      (r.branches||[]).forEach(b=>dl.append(h("option",{value:b})));
+    }catch(e){}
+  }
+  pathIn.addEventListener("change",()=>{loadBranches();syncRepos();});
+  [repoIn,pathIn,branchIn].forEach(x=>x.addEventListener("input",syncRepos));
+  loadBranches();
+  const row=h("div",{class:"setrow"},
+    h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:"仓库"}),repoIn,
+      h("button",{class:"setdel",text:"✕",title:"删除此仓库",
+        onclick:()=>{row.remove();syncRepos();}})),
+    h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:"本地"}),pathIn),
+    h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:"分支"}),branchIn,dl));
+  row._get=()=>({repo:repoIn.value.trim(),localPath:pathIn.value.trim(),
+    branch:branchIn.value.trim()});
+  return row;
+}
+function syncRepos(){
+  const box=$("#repoRows");
+  if(box&&setCfg)setCfg.repos=[...box.children].map(r=>r._get()).filter(r=>r.repo);
+}
+
+/* —— 各模块渲染 —— */
+function renderModule(){
+  const box=$("#setBody");box.innerHTML="";
+  const c=setCfg;
+  const fn={gh:renderGH,codex:renderCodex,claude:renderClaude,issue:renderIssue,
+    general:renderGeneral,perf:renderPerf,startup:renderStartup,about:renderAbout}[setModule];
+  if(fn)fn(box,c);
+}
+function renderGH(box){
+  box.append(h("div",{class:"sfdesc",style:"margin-bottom:14px",
+    text:"本机 GitHub CLI 的登录状态。issue 用当前活跃账号拉取。"}));
+  const pre=h("pre",{class:"spre",text:"加载中…"});
+  box.append(pre);
+  box.append(h("div",{class:"flex gap-2.5",style:"margin-top:14px"},
+    sBtn("刷新状态",false,()=>loadGH(pre)),
+    sBtn("登录新账号",true,()=>ghAction("/api/gh/login","已在终端打开 gh auth login")),
+    sBtn("切换活跃账号",false,()=>ghAction("/api/gh/switch","已在终端打开 gh auth switch"))));
+  loadGH(pre);
+}
+async function loadGH(pre){
+  pre.textContent="加载中…";
+  try{const d=await(await fetch("/api/gh/status")).json();pre.textContent=d.text||"（无输出）";}
+  catch(e){pre.textContent="无法连接服务";}
+}
+async function ghAction(url,okMsg){
+  try{const d=await(await fetch(url,{method:"POST"})).json();
+    setMsg(d.ok?okMsg:"失败："+(d.error||"未知"));}
+  catch(e){setMsg("失败：无法连接服务");}
+}
+function renderCodex(box,c){
+  box.append(
+    sField("启用监控","关闭后不再扫描 Codex 会话",
+      sToggle(c.codex.enabled,v=>c.codex.enabled=v)),
+    sField("数据源目录","空 = 默认 ~/.codex/sessions。改动下一轮扫描生效。",
+      sText(c.codex.sessionsPath,"~/.codex/sessions",v=>c.codex.sessionsPath=v)),
+    sField("续聊命令模版","「继续对话」按钮在终端运行。占位符 {sid} {cwd}，自动转义。",
+      sText(c.codex.resumeCmd,"codex resume {sid}",v=>c.codex.resumeCmd=v)),
+    sField("发消息命令模版","底部编写器后台发送。占位符 {sid} {input}，自动转义。",
+      sText(c.codex.sendCmd,"codex exec resume {sid} {input}",v=>c.codex.sendCmd=v)));
+}
+function renderClaude(box,c){
+  box.append(
+    sField("启用监控","关闭后不再扫描 Claude 会话",
+      sToggle(c.claude.enabled,v=>c.claude.enabled=v)),
+    sField("数据源目录","空 = 默认 ~/.claude/projects。改动下一轮扫描生效。",
+      sText(c.claude.projectsPath,"~/.claude/projects",v=>c.claude.projectsPath=v)));
+  const projBox=h("div",{style:"max-height:220px;overflow:auto;width:100%"},
+    h("div",{class:"sfdesc",text:"加载中…"}));
+  box.append(sField("监控哪些项目","不勾选 = 全部。改动下一轮扫描生效。",projBox));
+  loadClaudeProjects(projBox,c);
+  box.append(
+    sField("续聊命令模版","「继续对话」按钮在终端运行。占位符 {sid} {cwd}。",
+      sText(c.claude.resumeCmd,"",v=>c.claude.resumeCmd=v)),
+    sField("上下文窗口大小","用于右下角「上下文占用」百分比。Sonnet 1000000 / Opus 200000。",
+      sNum(c.claude.contextWindow,v=>c.claude.contextWindow=v)));
+}
+async function loadClaudeProjects(box,c){
+  try{
+    const d=await(await fetch("/api/claude/projects")).json();
+    box.innerHTML="";
+    const watched=new Set(c.claude.watchedProjects||[]);
+    if(!(d.projects||[]).length){
+      box.append(h("div",{class:"sfdesc",text:d.error||"该目录下没有项目"}));return;
+    }
+    d.projects.forEach(p=>{
+      const cb=h("input",{type:"checkbox"});
+      cb.checked=watched.has(p.name);
+      cb.addEventListener("change",()=>{
+        if(cb.checked)watched.add(p.name);else watched.delete(p.name);
+        c.claude.watchedProjects=[...watched];
+      });
+      box.append(h("label",{class:"schk"},cb,h("span",{class:"truncate",text:p.name})));
+    });
+  }catch(e){box.innerHTML="";box.append(h("div",{class:"sfdesc",text:"加载失败"}));}
+}
+function renderIssue(box,c){
+  const i=c.issue;
+  box.append(
+    sField("指派人 assignee","@me = 分配给自己；留空 = 不限。",
+      sText(i.assignee,"@me",v=>i.assignee=v)),
+    sField("状态 state",null,sSelect(i.state,[
+      {v:"open",t:"open（开启）"},{v:"closed",t:"closed（已关闭）"},{v:"all",t:"all（全部）"}],
+      v=>i.state=v)),
+    sField("标签 label","多个用英文逗号分隔；留空 = 不限。",
+      sText((i.labels||[]).join(", "),"bug, help wanted",
+        v=>i.labels=v.split(",").map(x=>x.trim()).filter(Boolean))),
+    sField("拉取上限 limit",null,sNum(i.limit,v=>i.limit=v)),
+    sField("刷新间隔（分钟）",null,sNum(i.refreshMinutes,v=>i.refreshMinutes=v)),
+    sField("菜单栏最多显示",null,sNum(i.menuMax,v=>i.menuMax=v)),
+    sField("在菜单栏显示 issue",null,sToggle(i.showInMenu,v=>i.showInMenu=v)),
+    sField("「详情」命令模版","菜单栏 issue 详情按钮。占位符 {number} {repo} {path}。",
+      sText(i.detailCmd,"",v=>i.detailCmd=v)));
+  box.append(h("div",{class:"sgrouptitle",text:"仓库关联"}));
+  box.append(h("div",{class:"sfdesc",style:"margin-bottom:10px",
+    text:"关联 GitHub 仓库与本地代码。菜单栏汇总这些仓库里的 issue。"}));
+  const rows=h("div",{class:"flex flex-col gap-3",id:"repoRows"});
+  (c.repos||[]).forEach(rm=>rows.append(repoRow(rm)));
+  box.append(rows);
+  box.append(h("button",{class:"sbtn accent",style:"margin-top:14px",text:"+ 添加仓库",
+    onclick:()=>rows.append(repoRow())}));
+}
+function renderGeneral(box,c){
+  const g=c.general;
+  const pathField=sField("自定义浏览器路径","填 .app 完整路径",
+    sText(g.browserPath,"/Applications/Xxx.app",v=>g.browserPath=v));
+  function syncPath(){pathField.style.display=g.browser==="custom"?"":"none";}
+  box.append(
+    sField("打开链接用的浏览器","用于打开 issue 等外部链接。",sSelect(g.browser,[
+      {v:"chrome",t:"Google Chrome"},{v:"safari",t:"Safari"},
+      {v:"default",t:"系统默认"},{v:"custom",t:"自定义…"}],
+      v=>{g.browser=v;syncPath();})),
+    pathField,
+    sField("打开会话用的终端","「继续对话」「详情」按钮用哪个终端。",sSelect(g.terminal,[
+      {v:"iterm",t:"iTerm2"},{v:"terminal",t:"Terminal"},{v:"auto",t:"自动"}],
+      v=>g.terminal=v)));
+  syncPath();
+}
+function renderPerf(box,c){
+  const p=c.perf;
+  box.append(
+    sField("扫描间隔（毫秒）","会话文件轮询频率，最低 100。",
+      sNum(p.scanIntervalMs,v=>p.scanIntervalMs=v)),
+    sField("大会话字节预算","单会话详情返回的最大字节数。",
+      sNum(p.detailBudget,v=>p.detailBudget=v)),
+    sField("大会话条数上限",null,sNum(p.detailMaxN,v=>p.detailMaxN=v)),
+    sField("「活跃」判定时间窗（秒）","文件多久内有写入算「进行中」。",
+      sNum(p.activeWindowSec,v=>p.activeWindowSec=v)));
+}
+function renderStartup(box,c){
+  const s=c.startup;
+  box.append(h("div",{class:"sfdesc",style:"margin-bottom:8px",
+    text:"由 macOS 外壳读取：开机自启动即时生效；开窗 / 关窗设置在下次启动 / 关窗时生效。"}));
+  box.append(
+    sField("开机自启动",null,sToggle(s.launchAtLogin,v=>s.launchAtLogin=v)),
+    sField("启动时打开主窗口","关 = 仅驻留菜单栏后台。",
+      sToggle(s.openWindowOnLaunch,v=>s.openWindowOnLaunch=v)),
+    sField("关闭窗口时",null,sSelect(s.onWindowClose,[
+      {v:"background",t:"转入菜单栏后台"},{v:"quit",t:"退出 App"}],
+      v=>s.onWindowClose=v)));
+}
+function renderAbout(box,c){
+  box.append(
+    sField("立即重新扫描","马上全量扫描一次会话文件。",
+      sBtn("重新扫描",false,async()=>{
+        try{await fetch("/api/rescan",{method:"POST"});setMsg("已触发重新扫描");}
+        catch(e){setMsg("失败：无法连接服务");}
+      })),
+    sField("导出配置","下载当前配置为 JSON 文件。",sBtn("导出",false,exportCfg)),
+    sField("导入配置","从 JSON 文件载入配置，需点「保存」生效。",sBtn("导入",false,importCfg)),
+    sField("配置文件",null,h("div",{class:"sfdesc",text:"~/.codex-viewer.json"})));
+}
+function exportCfg(){
+  const blob=new Blob([JSON.stringify(setCfg,null,2)],{type:"application/json"});
+  const a=h("a",{href:URL.createObjectURL(blob),download:"codex-viewer.json"});
+  document.body.append(a);a.click();a.remove();
+}
+function importCfg(){
+  const inp=h("input",{type:"file",accept:".json,application/json"});
+  inp.addEventListener("change",async()=>{
+    const f=inp.files[0];if(!f)return;
+    try{
+      const obj=JSON.parse(await f.text());
+      if(typeof obj!=="object"||obj==null)throw 0;
+      setCfg=obj;normalizeCfg(setCfg);renderModule();setMsg("已载入，请点「保存」生效");
+    }catch(e){setMsg("导入失败：JSON 无效");}
+  });
+  inp.click();
+}
+// normalizeCfg 补齐缺失的子对象，避免渲染时报错。
+function normalizeCfg(c){
+  c.repos=c.repos||[];
+  c.codex=c.codex||{};c.claude=c.claude||{};c.issue=c.issue||{};
+  c.general=c.general||{};c.perf=c.perf||{};c.startup=c.startup||{};
+}
+function renderNav(){
+  const nav=$("#setNav");nav.innerHTML="";
+  SMODULES.forEach(m=>nav.append(h("div",
+    {class:"snav"+(m.id===setModule?" active":""),text:m.name,
+     onclick:()=>{setModule=m.id;renderNav();renderModule();}})));
+}
+async function openSettings(){
+  setMsg("");setCfg=null;
+  $("#setBody").innerHTML="<div class='sfdesc'>加载中…</div>";
+  $("#settings").classList.remove("hidden");
+  renderNav();
+  try{setCfg=await(await fetch("/api/config")).json();}catch(e){setCfg=null;}
+  if(!setCfg){$("#setBody").innerHTML="<div class='sfdesc'>无法连接服务</div>";return;}
+  normalizeCfg(setCfg);
+  renderModule();
+}
+window.openSettings=openSettings;
+function closeSettings(){$("#settings").classList.add("hidden");}
+function validateCfg(c){
+  if(c.codex.sendCmd&&!c.codex.sendCmd.includes("{input}"))
+    return "Codex 发消息模版必须包含 {input}";
+  if(c.codex.resumeCmd&&!c.codex.resumeCmd.includes("{sid}"))
+    return "Codex 续聊模版必须包含 {sid}";
+  if(c.claude.resumeCmd&&!c.claude.resumeCmd.includes("{sid}"))
+    return "Claude 续聊模版必须包含 {sid}";
+  if(c.issue.detailCmd&&!c.issue.detailCmd.includes("{number}"))
+    return "「详情」模版必须包含 {number}";
+  return "";
+}
+async function saveSettings(){
+  if(!setCfg){setMsg("配置未加载");return;}
+  syncRepos();
+  const err=validateCfg(setCfg);
+  if(err){setMsg("保存失败："+err);return;}
+  setMsg("保存中…");
+  try{
+    const r=await(await fetch("/api/config",{method:"POST",
+      body:JSON.stringify(setCfg)})).json();
+    setMsg(r.ok?"已保存 · 配置已生效":"保存失败："+(r.error||"未知错误"));
+  }catch(e){setMsg("保存失败：无法连接服务");}
+}
+$("#setClose").addEventListener("click",closeSettings);
+$("#setSave").addEventListener("click",saveSettings);
+$("#openSet").addEventListener("click",openSettings);
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"&&!$("#settings").classList.contains("hidden"))closeSettings();
 });
 
 /* ── 启动 ── */

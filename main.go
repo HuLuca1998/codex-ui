@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,17 +30,15 @@ var indexHTML []byte
 //go:embed tailwind.js
 var tailwindJS []byte
 
-const (
-	activeWindow = 90 * time.Second // 此窗口内有写入视为「进行中」
-	headLimit    = 64 * 1024        // 启动时每个文件最多读取的头部字节
-	detailBudget = 6 << 20          // /api/session 返回事件的字节预算
-	detailMaxN   = 6000             // /api/session 返回事件的条数上限
-)
+const headLimit = 64 * 1024 // 启动时每个文件最多读取的头部字节
 
 // srcDef 是一个数据源（codex / claude）及其根目录。
 type srcDef struct{ name, root string }
 
-var sources []srcDef
+var (
+	cfgCache     atomic.Value // 缓存的 Config，由 reloadConfig 刷新
+	cliCodexRoot string       // 命令行参数覆盖的 codex 数据源目录
+)
 
 // Summary 是单个会话在列表中的概要（仅元信息，统计交由前端计算）。
 type Summary struct {
@@ -82,29 +81,24 @@ var (
 )
 
 func main() {
-	home, _ := os.UserHomeDir()
-	codex := env("CODEX_SESSIONS", filepath.Join(home, ".codex", "sessions"))
-	claude := env("CLAUDE_PROJECTS", filepath.Join(home, ".claude", "projects"))
 	if len(os.Args) > 1 {
-		codex = os.Args[1]
+		cliCodexRoot = os.Args[1]
 	}
-	for _, d := range []srcDef{{"codex", codex}, {"claude", claude}} {
-		if abs, err := filepath.Abs(d.root); err == nil {
-			d.root = abs
-		}
-		if fi, err := os.Stat(d.root); err == nil && fi.IsDir() {
-			sources = append(sources, d)
-		}
-	}
-	if len(sources) == 0 {
-		log.Fatal("未找到 ~/.codex/sessions 或 ~/.claude/projects")
-	}
+	reloadConfig() // 建立配置缓存
 
 	scanParallel() // 首轮并行扫描（仅读头部），建立基线
 	go func() {
 		for {
-			time.Sleep(800 * time.Millisecond)
+			cfg := reloadConfig() // 每轮重读配置，外部改动也能生效
+			time.Sleep(time.Duration(cfg.Perf.ScanIntervalMs) * time.Millisecond)
 			scan()
+		}
+	}()
+	go func() {
+		refreshIssues() // 启动即拉一次
+		for {
+			time.Sleep(time.Duration(liveConfig().Issue.RefreshMinutes) * time.Minute)
+			refreshIssues()
 		}
 	}()
 
@@ -120,6 +114,15 @@ func main() {
 	mux.HandleFunc("/api/stream", streamHandler)
 	mux.HandleFunc("/api/resume", resumeHandler)
 	mux.HandleFunc("/api/send", sendHandler)
+	mux.HandleFunc("/api/config", configHandler)
+	mux.HandleFunc("/api/issues", issuesHandler)
+	mux.HandleFunc("/api/branches", branchesHandler)
+	mux.HandleFunc("/api/issue-run", issueRunHandler)
+	mux.HandleFunc("/api/gh/status", ghStatusHandler)
+	mux.HandleFunc("/api/gh/login", ghLoginHandler)
+	mux.HandleFunc("/api/gh/switch", ghSwitchHandler)
+	mux.HandleFunc("/api/claude/projects", claudeProjectsHandler)
+	mux.HandleFunc("/api/rescan", rescanHandler)
 
 	ln, port := listen()
 	if pf := os.Getenv("CODEXUI_PORTFILE"); pf != "" {
@@ -127,7 +130,7 @@ func main() {
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	fmt.Printf("\n  ◆ Session Viewer — Codex & Claude\n")
-	for _, s := range sources {
+	for _, s := range currentSources() {
 		fmt.Printf("  ◆ 数据源 %-7s %s\n", s.name, s.root)
 	}
 	fmt.Printf("  ◆ 打开           %s\n\n", url)
@@ -188,10 +191,11 @@ func sessionDetailHandler(w http.ResponseWriter, r *http.Request) {
 	total := len(all)
 
 	// 尾部窗口：超大会话只返回最近的事件，避免压垮浏览器。
+	perf := liveConfig().Perf
 	start, budget := 0, 0
 	for i := len(all) - 1; i >= 0; i-- {
 		budget += len(all[i])
-		if budget > detailBudget || total-i > detailMaxN {
+		if budget > perf.DetailBudget || total-i > perf.DetailMaxN {
 			start = i + 1
 			break
 		}
@@ -222,21 +226,22 @@ func resumeHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": "该会话缺少 session id"})
 		return
 	}
-	var cmd string
+	cfg := liveConfig()
+	var tmpl string
 	switch sum.Source {
 	case "claude":
-		cmd = "claude --resume " + sum.Sid +
-			" --permission-mode bypassPermissions --allow-dangerously-skip-permissions"
+		tmpl = cfg.Claude.ResumeCmd
 	case "codex":
-		cmd = "codex resume " + sum.Sid
+		tmpl = cfg.Codex.ResumeCmd
 	default:
 		writeJSON(w, map[string]any{"ok": false, "error": "未知来源"})
 		return
 	}
+	cmd := fillTemplate(tmpl, map[string]string{"sid": sum.Sid, "cwd": sum.Cwd}, true)
 	if sum.Cwd != "" {
 		cmd = "cd " + shellQuote(sum.Cwd) + " && " + cmd
 	}
-	if err := launchITerm(cmd); err != nil {
+	if err := launchITerm(cmd, cfg.General); err != nil {
 		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
@@ -248,19 +253,52 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// launchITerm 在 iTerm2 新窗口运行命令（无 iTerm 时回退到 Terminal）。
-func launchITerm(cmd string) error {
+// shellJoin 把参数逐个 shell 转义后用空格连接。
+func shellJoin(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = shellQuote(a)
+	}
+	return strings.Join(parts, " ")
+}
+
+// fillTemplate 把命令模版里的 {key} 占位符替换为对应值；
+// quote=true 时对每个值做 shell 转义（防注入）。
+func fillTemplate(tmpl string, vals map[string]string, quote bool) string {
+	out := tmpl
+	for k, v := range vals {
+		rep := v
+		if quote {
+			rep = shellQuote(v)
+		}
+		out = strings.ReplaceAll(out, "{"+k+"}", rep)
+	}
+	return out
+}
+
+// launchITerm 在终端新窗口运行命令。按通用配置选 iTerm2 / Terminal，
+// 其它值则自动选择（装了 iTerm 用 iTerm，否则 Terminal）。
+func launchITerm(cmd string, g GeneralConfig) error {
 	esc := strings.ReplaceAll(cmd, `\`, `\\`)
 	esc = strings.ReplaceAll(esc, `"`, `\"`)
+	itermScript := "tell application \"iTerm\"\n" +
+		"\tactivate\n" +
+		"\tset w to (create window with default profile)\n" +
+		"\ttell current session of w to write text \"" + esc + "\"\n" +
+		"end tell"
+	terminalScript := "tell application \"Terminal\"\n\tactivate\n\tdo script \"" + esc + "\"\nend tell"
 	var script string
-	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
-		script = "tell application \"iTerm\"\n" +
-			"\tactivate\n" +
-			"\tset w to (create window with default profile)\n" +
-			"\ttell current session of w to write text \"" + esc + "\"\n" +
-			"end tell"
-	} else {
-		script = "tell application \"Terminal\"\n\tactivate\n\tdo script \"" + esc + "\"\nend tell"
+	switch g.Terminal {
+	case "terminal":
+		script = terminalScript
+	case "iterm":
+		script = itermScript
+	default:
+		if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+			script = itermScript
+		} else {
+			script = terminalScript
+		}
 	}
 	return exec.Command("osascript", "-e", script).Start()
 }
@@ -298,7 +336,8 @@ func sendHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": "消息为空"})
 		return
 	}
-	sh := "codex exec resume " + shellQuote(sum.Sid) + " " + shellQuote(msg)
+	sh := fillTemplate(liveConfig().Codex.SendCmd,
+		map[string]string{"sid": sum.Sid, "input": msg}, true)
 	if sum.Cwd != "" {
 		sh = "cd " + shellQuote(sum.Cwd) + " && " + sh
 	}
@@ -349,8 +388,9 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func sourceNames() []string {
-	out := make([]string, len(sources))
-	for i, s := range sources {
+	srcs := currentSources()
+	out := make([]string, len(srcs))
+	for i, s := range srcs {
 		out[i] = s.name
 	}
 	return out
@@ -358,20 +398,70 @@ func sourceNames() []string {
 
 // ── 扫描与解析 ──────────────────────────────────────────────
 
-// listFiles 返回所有数据源下的 .jsonl 文件。
+// resolveRoot 依次按 配置值 → 命令行参数 → 环境变量 → 默认值 解析数据源目录。
+func resolveRoot(configured, cli, envKey, def string) string {
+	r := strings.TrimSpace(configured)
+	if r == "" {
+		r = cli
+	}
+	if r == "" {
+		r = env(envKey, def)
+	}
+	if abs, err := filepath.Abs(r); err == nil {
+		r = abs
+	}
+	return r
+}
+
+// currentSources 按当前配置返回启用且存在的数据源列表。
+func currentSources() []srcDef {
+	cfg := liveConfig()
+	home, _ := os.UserHomeDir()
+	var out []srcDef
+	if cfg.Codex.Enabled {
+		root := resolveRoot(cfg.Codex.SessionsPath, cliCodexRoot,
+			"CODEX_SESSIONS", filepath.Join(home, ".codex", "sessions"))
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			out = append(out, srcDef{"codex", root})
+		}
+	}
+	if cfg.Claude.Enabled {
+		root := resolveRoot(cfg.Claude.ProjectsPath, "",
+			"CLAUDE_PROJECTS", filepath.Join(home, ".claude", "projects"))
+		if fi, err := os.Stat(root); err == nil && fi.IsDir() {
+			out = append(out, srcDef{"claude", root})
+		}
+	}
+	return out
+}
+
+// listFiles 返回所有启用数据源下的 .jsonl 文件。
+// Claude 若配置了 watchedProjects，则只遍历选中的项目子目录。
 func listFiles() []fileEntry {
+	cfg := liveConfig()
 	var out []fileEntry
-	for _, s := range sources {
+	for _, s := range currentSources() {
 		name, root := s.name, s.root
-		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
+		walkRoots := []string{root}
+		if name == "claude" && len(cfg.Claude.WatchedProjects) > 0 {
+			walkRoots = walkRoots[:0]
+			for _, p := range cfg.Claude.WatchedProjects {
+				if p = strings.TrimSpace(p); p != "" {
+					walkRoots = append(walkRoots, filepath.Join(root, p))
+				}
+			}
+		}
+		for _, wr := range walkRoots {
+			filepath.WalkDir(wr, func(p string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if !d.IsDir() && strings.HasSuffix(p, ".jsonl") {
+					out = append(out, fileEntry{p, name, root})
+				}
 				return nil
-			}
-			if !d.IsDir() && strings.HasSuffix(p, ".jsonl") {
-				out = append(out, fileEntry{p, name, root})
-			}
-			return nil
-		})
+			})
+		}
 	}
 	return out
 }
@@ -458,6 +548,7 @@ func processFile(fe fileEntry, fi os.FileInfo, broadcast, startup bool) {
 	}
 
 	st.sum.Mtime = fi.ModTime().UnixMilli()
+	activeWindow := time.Duration(liveConfig().Perf.ActiveWindowSec) * time.Second
 	active := time.Since(fi.ModTime()) < activeWindow
 	if active != st.sum.Active {
 		st.sum.Active = active
@@ -774,4 +865,457 @@ func openBrowser(url string) {
 		c = exec.Command("xdg-open", url)
 	}
 	c.Start()
+}
+
+// ── 仓库配置与 Issue ────────────────────────────────────────
+
+// RepoMap 是一条「GitHub 仓库 → 本地代码 → 主分支」映射。
+type RepoMap struct {
+	Repo      string `json:"repo"` // owner/name
+	LocalPath string `json:"localPath"`
+	Branch    string `json:"branch"`
+}
+
+// AgentConfig 是 Codex 的监控与命令配置。
+type AgentConfig struct {
+	Enabled      bool   `json:"enabled"`      // 是否监控该数据源
+	SessionsPath string `json:"sessionsPath"` // 数据源目录；空 = 默认 ~/.codex/sessions
+	ResumeCmd    string `json:"resumeCmd"`    // iTerm 续聊命令模版
+	SendCmd      string `json:"sendCmd"`      // 后台发消息命令模版
+}
+
+// ClaudeConfig 是 Claude 的监控与命令配置。
+type ClaudeConfig struct {
+	Enabled         bool     `json:"enabled"`
+	ProjectsPath    string   `json:"projectsPath"`    // 空 = 默认 ~/.claude/projects
+	WatchedProjects []string `json:"watchedProjects"` // 监控的项目子目录名；空 = 全部
+	ResumeCmd       string   `json:"resumeCmd"`       // iTerm 续聊命令模版
+	ContextWindow   int      `json:"contextWindow"`   // 上下文窗口大小
+}
+
+// IssueConfig 是 issue 拉取过滤与菜单栏展示配置。
+type IssueConfig struct {
+	Assignee       string   `json:"assignee"`       // @me / 用户名 / 空=不限
+	State          string   `json:"state"`          // open|closed|all
+	Labels         []string `json:"labels"`         // 标签过滤
+	Limit          int      `json:"limit"`          // 拉取上限
+	RefreshMinutes int      `json:"refreshMinutes"` // 刷新间隔（分钟）
+	MenuMax        int      `json:"menuMax"`        // 菜单栏最多显示条数
+	ShowInMenu     bool     `json:"showInMenu"`     // 是否在菜单栏显示 issue
+	DetailCmd      string   `json:"detailCmd"`      // 「详情」按钮命令模版
+}
+
+// GeneralConfig 是浏览器 / 终端等通用集成配置。
+type GeneralConfig struct {
+	Browser     string `json:"browser"`     // chrome|safari|default|custom
+	BrowserPath string `json:"browserPath"` // custom 时的 .app 路径
+	Terminal    string `json:"terminal"`    // iterm|terminal|auto
+}
+
+// PerfConfig 是扫描与性能相关配置。
+type PerfConfig struct {
+	ScanIntervalMs  int `json:"scanIntervalMs"`  // 扫描轮询间隔
+	DetailBudget    int `json:"detailBudget"`    // 大会话返回字节预算
+	DetailMaxN      int `json:"detailMaxN"`      // 大会话返回条数上限
+	ActiveWindowSec int `json:"activeWindowSec"` // 「活跃」判定时间窗（秒）
+}
+
+// StartupConfig 是 macOS 外壳的启动行为配置（由 Swift 侧读取应用）。
+type StartupConfig struct {
+	LaunchAtLogin      bool   `json:"launchAtLogin"`
+	OpenWindowOnLaunch bool   `json:"openWindowOnLaunch"`
+	OnWindowClose      string `json:"onWindowClose"` // background|quit
+}
+
+// Config 是持久化的应用配置（~/.codex-viewer.json）。
+type Config struct {
+	Repos   []RepoMap     `json:"repos"`
+	Codex   AgentConfig   `json:"codex"`
+	Claude  ClaudeConfig  `json:"claude"`
+	Issue   IssueConfig   `json:"issue"`
+	General GeneralConfig `json:"general"`
+	Perf    PerfConfig    `json:"perf"`
+	Startup StartupConfig `json:"startup"`
+}
+
+const (
+	defCodexResume  = "codex resume {sid}"
+	defCodexSend    = "codex exec resume {sid} {input}"
+	defClaudeResume = "claude --resume {sid} --permission-mode bypassPermissions --allow-dangerously-skip-permissions"
+	defIssueDetail  = `claude --permission-mode bypassPermissions --allow-dangerously-skip-permissions "/issue info {number}"`
+)
+
+// defaultConfig 返回所有字段都为默认值的配置。
+// loadConfig 先以它打底，再用文件内容覆盖，从而对老配置（仅含 repos）向后兼容。
+func defaultConfig() Config {
+	return Config{
+		Codex:   AgentConfig{Enabled: true, ResumeCmd: defCodexResume, SendCmd: defCodexSend},
+		Claude:  ClaudeConfig{Enabled: true, ResumeCmd: defClaudeResume, ContextWindow: 1000000},
+		Issue:   IssueConfig{Assignee: "@me", State: "open", Limit: 50, RefreshMinutes: 3, MenuMax: 20, ShowInMenu: true, DetailCmd: defIssueDetail},
+		General: GeneralConfig{Browser: "chrome", Terminal: "iterm"},
+		Perf:    PerfConfig{ScanIntervalMs: 800, DetailBudget: 6 << 20, DetailMaxN: 6000, ActiveWindowSec: 90},
+		Startup: StartupConfig{OpenWindowOnLaunch: true, OnWindowClose: "background"},
+	}
+}
+
+// sanitize 把非法 / 空值夹回安全范围。
+func (c *Config) sanitize() {
+	if c.Issue.Limit <= 0 {
+		c.Issue.Limit = 50
+	}
+	if c.Issue.RefreshMinutes <= 0 {
+		c.Issue.RefreshMinutes = 3
+	}
+	if c.Issue.MenuMax <= 0 {
+		c.Issue.MenuMax = 20
+	}
+	if c.Issue.State == "" {
+		c.Issue.State = "open"
+	}
+	if c.Issue.DetailCmd == "" {
+		c.Issue.DetailCmd = defIssueDetail
+	}
+	if c.Perf.ScanIntervalMs < 100 {
+		c.Perf.ScanIntervalMs = 800
+	}
+	if c.Perf.DetailBudget <= 0 {
+		c.Perf.DetailBudget = 6 << 20
+	}
+	if c.Perf.DetailMaxN <= 0 {
+		c.Perf.DetailMaxN = 6000
+	}
+	if c.Perf.ActiveWindowSec <= 0 {
+		c.Perf.ActiveWindowSec = 90
+	}
+	if c.Claude.ContextWindow <= 0 {
+		c.Claude.ContextWindow = 1000000
+	}
+	if c.Codex.ResumeCmd == "" {
+		c.Codex.ResumeCmd = defCodexResume
+	}
+	if c.Codex.SendCmd == "" {
+		c.Codex.SendCmd = defCodexSend
+	}
+	if c.Claude.ResumeCmd == "" {
+		c.Claude.ResumeCmd = defClaudeResume
+	}
+	if c.General.Browser == "" {
+		c.General.Browser = "chrome"
+	}
+	if c.General.Terminal == "" {
+		c.General.Terminal = "iterm"
+	}
+	if c.Startup.OnWindowClose == "" {
+		c.Startup.OnWindowClose = "background"
+	}
+}
+
+func configPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex-viewer.json")
+}
+
+// loadConfig 以默认值打底，再用配置文件覆盖已出现的字段（缺失字段保留默认）。
+func loadConfig() Config {
+	c := defaultConfig()
+	if data, err := os.ReadFile(configPath()); err == nil {
+		json.Unmarshal(data, &c)
+	}
+	c.sanitize()
+	return c
+}
+
+func saveConfig(c Config) error {
+	c.sanitize()
+	data, _ := json.MarshalIndent(c, "", "  ")
+	return os.WriteFile(configPath(), data, 0644)
+}
+
+// reloadConfig 从磁盘重读配置并刷新内存缓存。
+func reloadConfig() Config {
+	c := loadConfig()
+	cfgCache.Store(c)
+	return c
+}
+
+// liveConfig 返回缓存的配置（不读盘）。
+func liveConfig() Config {
+	if c, ok := cfgCache.Load().(Config); ok {
+		return c
+	}
+	return defaultConfig()
+}
+
+// Label 是 issue 标签（名称 + 颜色）。
+type Label struct {
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// Issue 是聚合后的单条 issue。
+type Issue struct {
+	Repo      string  `json:"repo"`
+	Number    int     `json:"number"`
+	Title     string  `json:"title"`
+	URL       string  `json:"url"`
+	Labels    []Label `json:"labels"`
+	UpdatedAt string  `json:"updatedAt"`
+}
+
+var (
+	issuesMu  sync.Mutex // 保护 issue 缓存字段
+	issues    []Issue
+	issuesAt  time.Time
+	issuesErr string
+	refreshMu sync.Mutex // 串行化刷新，避免并发 gh 调用
+)
+
+// ghIssues 按 issue 过滤配置调用 gh CLI 拉取某仓库的 issue。
+// 经登录 shell 运行以取得完整 PATH（gh 通常在 /opt/homebrew/bin）。
+func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
+	args := []string{"issue", "list", "--repo", repo,
+		"--json", "number,title,labels,updatedAt,url"}
+	if ic.State != "" {
+		args = append(args, "--state", ic.State)
+	}
+	if strings.TrimSpace(ic.Assignee) != "" {
+		args = append(args, "--assignee", ic.Assignee)
+	}
+	for _, l := range ic.Labels {
+		if l = strings.TrimSpace(l); l != "" {
+			args = append(args, "--label", l)
+		}
+	}
+	if ic.Limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(ic.Limit))
+	}
+	sh := "gh " + shellJoin(args)
+	cmd := exec.Command("/bin/zsh", "-lc", sh)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	var raw []struct {
+		Number    int     `json:"number"`
+		Title     string  `json:"title"`
+		URL       string  `json:"url"`
+		UpdatedAt string  `json:"updatedAt"`
+		Labels    []Label `json:"labels"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	list := make([]Issue, 0, len(raw))
+	for _, r := range raw {
+		list = append(list, Issue{
+			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
+			Labels: r.Labels, UpdatedAt: r.UpdatedAt,
+		})
+	}
+	return list, nil
+}
+
+// refreshIssues 遍历配置中的仓库，刷新内存里的 issue 缓存。
+func refreshIssues() {
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+
+	cfg := liveConfig()
+	var all []Issue
+	var errs []string
+	for _, rm := range cfg.Repos {
+		if strings.TrimSpace(rm.Repo) == "" {
+			continue
+		}
+		got, err := ghIssues(rm.Repo, cfg.Issue)
+		if err != nil {
+			errs = append(errs, rm.Repo+": "+err.Error())
+			continue
+		}
+		all = append(all, got...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].UpdatedAt > all[j].UpdatedAt })
+
+	issuesMu.Lock()
+	issues = all
+	issuesAt = time.Now()
+	issuesErr = strings.Join(errs, " · ")
+	issuesMu.Unlock()
+}
+
+// configHandler：GET 返回配置；POST 保存配置并触发一次 issue 刷新。
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		c := defaultConfig() // 以默认值打底，容忍部分字段的导入 / POST
+		if err := json.Unmarshal(body, &c); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": "JSON 解析失败"})
+			return
+		}
+		if err := saveConfig(c); err != nil {
+			writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		reloadConfig() // 立即刷新缓存，让新配置即时生效
+		go refreshIssues()
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	writeJSON(w, liveConfig())
+}
+
+// issuesHandler 返回缓存的 issue 列表；?refresh=1 强制同步刷新。
+func issuesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("refresh") != "" {
+		refreshIssues()
+	}
+	ic := liveConfig().Issue
+	issuesMu.Lock()
+	defer issuesMu.Unlock()
+	writeJSON(w, map[string]any{
+		"issues":     issues,
+		"updated":    issuesAt.UnixMilli(),
+		"error":      issuesErr,
+		"menuMax":    ic.MenuMax,
+		"showInMenu": ic.ShowInMenu,
+	})
+}
+
+// branchesHandler 返回本地仓库的分支列表（供设置页主分支下拉）。
+func branchesHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if path == "" {
+		writeJSON(w, map[string]any{"branches": []string{}})
+		return
+	}
+	out, err := exec.Command("git", "-C", path, "branch", "--format=%(refname:short)").Output()
+	if err != nil {
+		writeJSON(w, map[string]any{"branches": []string{}, "error": "不是有效的 git 仓库"})
+		return
+	}
+	var branches []string
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			branches = append(branches, ln)
+		}
+	}
+	writeJSON(w, map[string]any{"branches": branches})
+}
+
+// issueRunHandler 在该 issue 仓库对应的本地映射目录里，
+// 用 iTerm2 新窗口跑 `claude … "/issue info <number>"`。
+func issueRunHandler(w http.ResponseWriter, r *http.Request) {
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	number := strings.TrimSpace(r.URL.Query().Get("number"))
+	if repo == "" || number == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "缺少 repo 或 number"})
+		return
+	}
+	// 编号必须是纯数字，杜绝命令注入。
+	if _, err := strconv.Atoi(number); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "issue 编号非法"})
+		return
+	}
+	cfg := liveConfig()
+	var localPath string
+	for _, rm := range cfg.Repos {
+		if rm.Repo == repo {
+			localPath = strings.TrimSpace(rm.LocalPath)
+			break
+		}
+	}
+	if localPath == "" {
+		writeJSON(w, map[string]any{"ok": false,
+			"error": "未配置「" + repo + "」的本地目录 —— 请在设置里填写"})
+		return
+	}
+	if fi, err := os.Stat(localPath); err != nil || !fi.IsDir() {
+		writeJSON(w, map[string]any{"ok": false, "error": "本地目录不存在：" + localPath})
+		return
+	}
+	// number 已校验为纯数字、repo 为受限字符集、path 取自用户自己的配置，故原样替换。
+	inner := fillTemplate(cfg.Issue.DetailCmd, map[string]string{
+		"number": number, "repo": repo, "path": localPath}, false)
+	cmd := "cd " + shellQuote(localPath) + " && " + inner
+	if err := launchITerm(cmd, cfg.General); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "cmd": cmd})
+}
+
+// ── 设置相关 API ────────────────────────────────────────────
+
+// ghStatusHandler 返回 `gh auth status` 的输出（GitHub 账号登录情况）。
+func ghStatusHandler(w http.ResponseWriter, r *http.Request) {
+	cmd := exec.Command("/bin/zsh", "-lc", "gh auth status")
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	text := strings.TrimSpace(outBuf.String() + "\n" + errBuf.String())
+	if text == "" {
+		text = "未检测到 gh CLI —— 请先安装 GitHub CLI"
+	}
+	writeJSON(w, map[string]any{"ok": err == nil, "text": text})
+}
+
+// ghLoginHandler 在终端里启动交互式 `gh auth login`。
+func ghLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if err := launchITerm("gh auth login", liveConfig().General); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// ghSwitchHandler 在终端里启动 `gh auth switch`（切换活跃账号）。
+func ghSwitchHandler(w http.ResponseWriter, r *http.Request) {
+	if err := launchITerm("gh auth switch", liveConfig().General); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// claudeProjectsHandler 列出 Claude 项目目录下的子目录（供监控多选）。
+func claudeProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	home, _ := os.UserHomeDir()
+	root := resolveRoot(liveConfig().Claude.ProjectsPath, "",
+		"CLAUDE_PROJECTS", filepath.Join(home, ".claude", "projects"))
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		writeJSON(w, map[string]any{"projects": []any{}, "root": root,
+			"error": "无法读取目录：" + root})
+		return
+	}
+	type proj struct {
+		Name  string `json:"name"`
+		Mtime int64  `json:"mtime"`
+	}
+	list := make([]proj, 0, len(ents))
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		var mt int64
+		if fi, err := e.Info(); err == nil {
+			mt = fi.ModTime().UnixMilli()
+		}
+		list = append(list, proj{Name: e.Name(), Mtime: mt})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Mtime > list[j].Mtime })
+	writeJSON(w, map[string]any{"projects": list, "root": root})
+}
+
+// rescanHandler 立即触发一次全量扫描。
+func rescanHandler(w http.ResponseWriter, r *http.Request) {
+	go scan()
+	writeJSON(w, map[string]any{"ok": true})
 }
