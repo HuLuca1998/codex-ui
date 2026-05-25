@@ -432,6 +432,15 @@ func unzipTo(zipPath, dest string) error {
 }
 
 // applyUpdate spawn 助手脚本然后退出当前进程，让脚本完成 mv/open。
+//
+// 进程结构：Swift App（NSApplication 持 .app）→ 内嵌 Go binary（这个进程）。
+// 真正需要让出 .app bundle 占用的是 Swift App，不是 Go。
+// 流程：
+//   1. 拿 PPID（Swift 进程的 pid）
+//   2. spawn 一次性 bash（新 session 脱离父进程组，避免 Swift 退出时被一起杀）
+//   3. Go 自己 os.Exit(0)，但 Swift 还在跑
+//   4. bash 用 osascript 让 Swift 优雅退出（→ NSApp.terminate → applicationWillTerminate）
+//   5. bash 等 PPID 真的死了再 mv + open；超时退路用 SIGKILL
 func applyUpdate() error {
 	upd.mu.Lock()
 	src := upd.ReadyApp
@@ -439,7 +448,6 @@ func applyUpdate() error {
 	if src == "" {
 		return fmt.Errorf("尚未下载就绪")
 	}
-	// 当前正在运行的 app 路径：可执行文件在 .app/Contents/MacOS/CodexViewer
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -450,54 +458,94 @@ func applyUpdate() error {
 		dst = filepath.Dir(dst)
 	}
 	if !strings.HasSuffix(dst, ".app") {
-		// 不在 .app bundle 里（go run / debug 模式）— 拒绝原地替换
 		return fmt.Errorf("当前不在 .app bundle 中运行，无法自动替换")
 	}
-	pid := os.Getpid()
+	swiftPID := os.Getppid() // Swift App 的 PID — 真正的"父进程"
+	goPID := os.Getpid()
 
-	// 写一次性脚本到 updates 目录，由 Go spawn 后立刻退出
 	dir, err := updateDir()
 	if err != nil {
 		return err
 	}
 	script := filepath.Join(dir, "apply.sh")
 	body := fmt.Sprintf(`#!/usr/bin/env bash
-# 等待父进程退出，把新版 .app 原地搬上去，重新打开
-set -e
-PARENT_PID=%d
+# Codex Viewer 自动更新助手 —— 在 Swift App 退出后原地替换 .app 并重启
+# 由 Go 后端 spawn，本脚本以新 session 运行，独立于 Swift 进程组
+set -u
+
+GO_PID=%d
+SWIFT_PID=%d
 NEW_APP=%q
 DST_APP=%q
+LOG=%q
 
-# 等待最多 10 秒让父进程退出
-for i in $(seq 1 100); do
-  if ! kill -0 "$PARENT_PID" 2>/dev/null; then break; fi
+exec >>"$LOG" 2>&1
+echo "=== $(date '+%%F %%T') apply.sh 启动 ==="
+echo "Go PID=$GO_PID  Swift PID=$SWIFT_PID"
+
+# 1) Go 子进程会自己 os.Exit；等它消失
+for i in $(seq 1 50); do
+  kill -0 "$GO_PID" 2>/dev/null || break
   sleep 0.1
 done
 
-# 替换：先移到 trash 名字，再 mv 新的过去（避免读写中断）
-TRASH_DIR=$(dirname "$DST_APP")/.codex-viewer-old-$$
-mv "$DST_APP" "$TRASH_DIR" 2>/dev/null || true
-mv "$NEW_APP" "$DST_APP"
+# 2) 让 Swift App 优雅退出（触发 applicationWillTerminate，清理 portFile 等）
+#    用 bundle id 比 display name 稳定
+osascript -e 'tell application id "com.local.codexviewer" to quit' 2>/dev/null || true
+
+# 3) 等 Swift 真死（最多 5 秒），死透前不能动 .app bundle
+for i in $(seq 1 50); do
+  kill -0 "$SWIFT_PID" 2>/dev/null || break
+  sleep 0.1
+done
+# 顽固：强杀
+if kill -0 "$SWIFT_PID" 2>/dev/null; then
+  echo "Swift 没在 5s 内退，强杀"
+  kill -KILL "$SWIFT_PID" 2>/dev/null || true
+  sleep 0.5
+fi
+
+# 4) 替换：先 mv 旧的到临时名（容错）再 mv 新的到原位
+TRASH_DIR="$(dirname "$DST_APP")/.codex-viewer-old-$$"
+if ! mv "$DST_APP" "$TRASH_DIR" 2>/dev/null; then
+  # 可能是 /Applications 下权限不足；退路：rm -rf
+  rm -rf "$DST_APP" 2>/dev/null || true
+fi
+if ! mv "$NEW_APP" "$DST_APP"; then
+  echo "✗ mv 失败：$NEW_APP → $DST_APP"
+  # 还原旧 app（如果还在 trash 里）
+  [ -d "$TRASH_DIR" ] && mv "$TRASH_DIR" "$DST_APP" 2>/dev/null || true
+  open "$DST_APP" 2>/dev/null || true
+  exit 1
+fi
 xattr -cr "$DST_APP" 2>/dev/null || true
 rm -rf "$TRASH_DIR" 2>/dev/null || true
 
-# 启动新 app
+# 5) 刷新 Launch Services 缓存（避免 Finder 还认旧版本签名）
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$DST_APP" 2>/dev/null || true
+
+# 6) 起新 app
 open "$DST_APP"
-`, pid, src, dst)
+echo "=== $(date '+%%F %%T') apply.sh 完成 ==="
+`, goPID, swiftPID, src, dst, filepath.Join(dir, "apply.log"))
 	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
 		return err
 	}
-	cmd := exec.Command("/bin/bash", script)
-	// 完全脱离：让脚本在我们退出后继续跑
+	// 用 setsid 脱离当前进程组 + 重定向 std* 到 /dev/null，Swift 退出时不会被连带杀
+	cmd := exec.Command("/usr/bin/env", "setsid", "/bin/bash", script)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
-		return err
+		// setsid 不可用时退路：直接 bash（macOS 自带 setsid，理论不会走到）
+		cmd = exec.Command("/bin/bash", script)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
 	}
-	// 不等待，让父进程退出后脚本接管
+	// 给前端 SSE 一点时间送达，再退；Swift 后续由 osascript 收到 AppleEvent 退出
 	go func() {
-		time.Sleep(300 * time.Millisecond) // 给前端 SSE 一点时间送达
+		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
 	}()
 	return nil
