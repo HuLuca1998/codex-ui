@@ -4,7 +4,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +41,10 @@ type srcDef struct{ name, root string }
 var (
 	cfgCache     atomic.Value // 缓存的 Config，由 reloadConfig 刷新
 	cliCodexRoot string       // 命令行参数覆盖的 codex 数据源目录
+	serverToken  string       // 启动时生成；LAN 访问必须携带，loopback 免
+	// version 由打包脚本 ldflags 注入：go build -ldflags "-X main.version=v0.1.0"
+	// 本地 go run 时为 "dev"，跳过更新检查。
+	version = "dev"
 )
 
 // Summary 是单个会话在列表中的概要（仅元信息，统计交由前端计算）。
@@ -54,6 +61,7 @@ type Summary struct {
 	CliVersion string `json:"cliVersion"`
 	AgentRole  string `json:"agentRole"`
 	AgentName  string `json:"agentName"`
+	ParentSid  string `json:"parentSid"` // Claude 子代理：父会话 sid（== 路径中 <uuid>/subagents/ 的 uuid）
 	GitBranch  string `json:"gitBranch"`
 	StartTime  string `json:"startTime"`
 	Mtime      int64  `json:"mtime"`
@@ -84,7 +92,19 @@ func main() {
 	if len(os.Args) > 1 {
 		cliCodexRoot = os.Args[1]
 	}
+	// Swift 从 Dock 启动时 PATH 非常贫瘠，导致 exec.Command 找不到
+	// claude / codex / gh / git 等。这里抓一次 login shell 的 PATH 写回
+	// 进程级别，所有后续 exec.Command 都能受益。
+	enrichProcessPath()
+	// 允许通过环境变量固定 token（重启保持原链接）；否则启动时随机
+	if t := strings.TrimSpace(os.Getenv("CODEXUI_TOKEN")); t != "" {
+		serverToken = t
+	} else {
+		serverToken = genToken()
+	}
 	reloadConfig() // 建立配置缓存
+	loadPins()     // 读取置顶会话列表
+	loadStats()    // 读取用量报表缓存（不自动重算，由用户触发）
 
 	scanParallel() // 首轮并行扫描（仅读头部），建立基线
 	go func() {
@@ -95,10 +115,10 @@ func main() {
 		}
 	}()
 	go func() {
-		refreshIssues() // 启动即拉一次
+		refreshAll() // 启动即拉一次 issue 与 PR
 		for {
 			time.Sleep(time.Duration(liveConfig().Issue.RefreshMinutes) * time.Minute)
-			refreshIssues()
+			refreshAll()
 		}
 	}()
 
@@ -109,20 +129,41 @@ func main() {
 		w.Header().Set("Cache-Control", "max-age=86400")
 		w.Write(tailwindJS)
 	})
-	mux.HandleFunc("/api/sessions", sessionsHandler)
-	mux.HandleFunc("/api/session", sessionDetailHandler)
-	mux.HandleFunc("/api/stream", streamHandler)
-	mux.HandleFunc("/api/resume", resumeHandler)
-	mux.HandleFunc("/api/send", sendHandler)
-	mux.HandleFunc("/api/config", configHandler)
-	mux.HandleFunc("/api/issues", issuesHandler)
-	mux.HandleFunc("/api/branches", branchesHandler)
-	mux.HandleFunc("/api/issue-run", issueRunHandler)
-	mux.HandleFunc("/api/gh/status", ghStatusHandler)
-	mux.HandleFunc("/api/gh/login", ghLoginHandler)
-	mux.HandleFunc("/api/gh/switch", ghSwitchHandler)
-	mux.HandleFunc("/api/claude/projects", claudeProjectsHandler)
-	mux.HandleFunc("/api/rescan", rescanHandler)
+	// /api/* 全部走 token 鉴权；loopback 自动放行
+	api := func(p string, h http.HandlerFunc) { mux.HandleFunc(p, requireToken(h)) }
+	api("/api/sessions", sessionsHandler)
+	api("/api/session", sessionDetailHandler)
+	api("/api/pin", pinHandler)
+	api("/api/stats", statsHandler)
+	api("/api/stats/recompute", recomputeHandler)
+	api("/api/stream", streamHandler)
+	api("/api/resume", resumeHandler)
+	api("/api/send", sendHandler)
+	api("/api/config", configHandler)
+	api("/api/issues", issuesHandler)
+	api("/api/menubar", menubarHandler)
+	api("/api/branches", branchesHandler)
+	api("/api/issue-run", issueRunHandler)
+	api("/api/gh/status", ghStatusHandler)
+	api("/api/gh/login", ghLoginHandler)
+	api("/api/gh/switch", ghSwitchHandler)
+	api("/api/claude/projects", claudeProjectsHandler)
+	api("/api/rescan", rescanHandler)
+	api("/api/fs/ls", fsLsHandler)
+	api("/api/fs/home", fsHomeHandler)
+	api("/api/run", runHandler)
+	api("/api/lan-url", lanURLHandler)
+	// 更新机制
+	api("/api/version", versionHandler)
+	api("/api/update/check", updateCheckHandler)
+	api("/api/update/download", updateDownloadHandler)
+	api("/api/update/apply", updateApplyHandler)
+	// 仓库设置：gh repos 下拉 + Finder 选目录
+	api("/api/gh/repos", ghReposHandler)
+	api("/api/folder/pick", folderPickHandler)
+
+	// 启动更新检查后台轮询（version=="dev" 时跳过）
+	startUpdater()
 
 	ln, port := listen()
 	if pf := os.Getenv("CODEXUI_PORTFILE"); pf != "" {
@@ -133,7 +174,12 @@ func main() {
 	for _, s := range currentSources() {
 		fmt.Printf("  ◆ 数据源 %-7s %s\n", s.name, s.root)
 	}
-	fmt.Printf("  ◆ 打开           %s\n\n", url)
+	fmt.Printf("  ◆ 本机           %s\n", url)
+	fmt.Printf("  ◆ token          %s\n", serverToken)
+	for _, u := range lanURLs(port) {
+		fmt.Printf("  ◆ 局域网         %s\n", u)
+	}
+	fmt.Println()
 	if os.Getenv("NO_OPEN") == "" {
 		go openBrowser(url)
 	}
@@ -159,14 +205,40 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func sessionsHandler(w http.ResponseWriter, r *http.Request) {
+	rng := r.URL.Query().Get("range") // today|week|month|all，默认 today
+	if rng == "" {
+		rng = "today"
+	}
 	mu.Lock()
 	list := make([]Summary, 0, len(states))
 	for _, st := range states {
-		list = append(list, st.sum)
+		// 范围内的会话照常返回；置顶会话不受日期限制，始终带上
+		if inDateRange(st.sum.Mtime, rng) || isPinned(st.sum.ID) {
+			list = append(list, st.sum)
+		}
 	}
 	mu.Unlock()
 	sort.Slice(list, func(i, j int) bool { return list[i].Mtime > list[j].Mtime })
-	writeJSON(w, map[string]any{"sessions": list, "sources": sourceNames()})
+	writeJSON(w, map[string]any{"sessions": list, "sources": sourceNames(), "pins": pinnedList()})
+}
+
+// inDateRange 判断毫秒时间戳是否落在 today|week|month|all 范围内。
+func inDateRange(ms int64, rng string) bool {
+	if rng == "all" || ms == 0 {
+		return true
+	}
+	t := time.UnixMilli(ms)
+	now := time.Now()
+	switch rng {
+	case "week":
+		start := now.AddDate(0, 0, -((int(now.Weekday())+6)%7)) // 周一为一周起点
+		start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, now.Location())
+		return !t.Before(start)
+	case "month":
+		return t.Year() == now.Year() && t.Month() == now.Month()
+	default: // today
+		return t.Year() == now.Year() && t.YearDay() == now.YearDay()
+	}
 }
 
 func sessionDetailHandler(w http.ResponseWriter, r *http.Request) {
@@ -507,8 +579,10 @@ func processFile(fe fileEntry, fi os.FileInfo, broadcast, startup bool) {
 			sum:    Summary{ID: id, File: fe.path, Source: fe.source},
 			source: fe.source, root: fe.root,
 		}
-		if strings.Contains(fe.path, "/subagents/") {
+		if idx := strings.Index(fe.path, "/subagents/"); idx >= 0 {
 			st.sum.AgentRole = "subagent"
+			// 父 sid = 包含 subagents 目录的上一层目录名
+			st.sum.ParentSid = filepath.Base(fe.path[:idx])
 		}
 		states[id] = st
 	}
@@ -535,8 +609,8 @@ func processFile(fe fileEntry, fi os.FileInfo, broadcast, startup bool) {
 			changed = true
 		}
 	case size < st.offset:
-		role := st.sum.AgentRole
-		st.sum = Summary{ID: id, File: fe.path, Source: fe.source, AgentRole: role}
+		role, parent := st.sum.AgentRole, st.sum.ParentSid
+		st.sum = Summary{ID: id, File: fe.path, Source: fe.source, AgentRole: role, ParentSid: parent}
 		st.threadName = false
 		to := size
 		if startup && to > headLimit {
@@ -844,13 +918,97 @@ func listen() (net.Listener, int) {
 			base = n
 		}
 	}
+	// 默认绑全网卡，让局域网可达；可用 CODEXUI_HOST=127.0.0.1 锁回本机
+	host := env("CODEXUI_HOST", "0.0.0.0")
 	for p := base; p < base+40; p++ {
-		if ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(p)); err == nil {
+		if ln, err := net.Listen("tcp", host+":"+strconv.Itoa(p)); err == nil {
 			return ln, p
 		}
 	}
 	log.Fatal("找不到可用端口")
 	return nil, 0
+}
+
+// genToken 生成 24 字节 hex token；优先 crypto/rand，失败回退时间戳。
+func genToken() string {
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return hex.EncodeToString([]byte(time.Now().Format(time.RFC3339Nano)))
+}
+
+// lanIPv4s 列出所有可用于 LAN 访问的 IPv4 地址（剔除回环 / down）。
+func lanIPv4s() []string {
+	var out []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := ifc.Addrs()
+		for _, a := range addrs {
+			ipn, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipn.IP.To4()
+			if ip4 == nil || ip4.IsLinkLocalUnicast() {
+				continue
+			}
+			out = append(out, ip4.String())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// lanURLs 返回带 token 的 LAN 分享链接；同一 IP 不重复。
+func lanURLs(port int) []string {
+	ips := lanIPv4s()
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, fmt.Sprintf("http://%s:%d/?t=%s", ip, port, serverToken))
+	}
+	return out
+}
+
+// isLoopback 判断请求来源是否为本机 loopback；用于免 token 放行。
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// requireToken 在非 loopback 请求上强制校验 token。
+// 来源任意之一：?t= 查询、X-Token 头、codex_token cookie。
+func requireToken(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if isLoopback(r) {
+			h(w, r)
+			return
+		}
+		got := r.URL.Query().Get("t")
+		if got == "" {
+			got = r.Header.Get("X-Token")
+		}
+		if got == "" {
+			if c, err := r.Cookie("codex_token"); err == nil {
+				got = c.Value
+			}
+		}
+		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(serverToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		h(w, r)
+	}
 }
 
 func openBrowser(url string) {
@@ -874,6 +1032,29 @@ type RepoMap struct {
 	Repo      string `json:"repo"` // owner/name
 	LocalPath string `json:"localPath"`
 	Branch    string `json:"branch"`
+	Watch     bool   `json:"watch"` // 是否关注（菜单栏 issue/PR 仅汇总关注的仓库）
+}
+
+// UnmarshalJSON 让缺省的 watch 字段视为「关注」，兼容升级前的旧配置。
+func (r *RepoMap) UnmarshalJSON(data []byte) error {
+	type alias RepoMap
+	a := alias{Watch: true}
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*r = RepoMap(a)
+	return nil
+}
+
+// watchedRepos 返回所有已关注且仓库名非空的映射。
+func watchedRepos() []RepoMap {
+	var out []RepoMap
+	for _, rm := range liveConfig().Repos {
+		if rm.Watch && strings.TrimSpace(rm.Repo) != "" {
+			out = append(out, rm)
+		}
+	}
+	return out
 }
 
 // AgentConfig 是 Codex 的监控与命令配置。
@@ -927,6 +1108,11 @@ type StartupConfig struct {
 	OnWindowClose      string `json:"onWindowClose"` // background|quit
 }
 
+// RecentConfig 跟踪 web 启动 CLI 时用过的工作目录，做下拉快捷。
+type RecentConfig struct {
+	Cwds []string `json:"cwds"`
+}
+
 // Config 是持久化的应用配置（~/.codex-viewer.json）。
 type Config struct {
 	Repos   []RepoMap     `json:"repos"`
@@ -936,6 +1122,7 @@ type Config struct {
 	General GeneralConfig `json:"general"`
 	Perf    PerfConfig    `json:"perf"`
 	Startup StartupConfig `json:"startup"`
+	Recent  RecentConfig  `json:"recent"`
 }
 
 const (
@@ -1046,6 +1233,329 @@ func liveConfig() Config {
 	return defaultConfig()
 }
 
+// ── 会话置顶 ───────────────────────────────────────────────
+// 置顶会话 ID 持久化到独立文件，与应用配置解耦：配置面板保存时会
+// 整体覆写 ~/.codex-viewer.json，若放在一起会被清空。
+var (
+	pinsMu sync.Mutex
+	pins   = map[string]bool{}
+)
+
+func pinsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex-viewer-pins.json")
+}
+
+// loadPins 从磁盘读取置顶会话列表。
+func loadPins() {
+	m := map[string]bool{}
+	if data, err := os.ReadFile(pinsPath()); err == nil {
+		var ids []string
+		if json.Unmarshal(data, &ids) == nil {
+			for _, id := range ids {
+				m[id] = true
+			}
+		}
+	}
+	pinsMu.Lock()
+	pins = m
+	pinsMu.Unlock()
+}
+
+// pinnedList 返回当前所有置顶会话 ID。
+func pinnedList() []string {
+	pinsMu.Lock()
+	defer pinsMu.Unlock()
+	ids := make([]string, 0, len(pins))
+	for id := range pins {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// savePins 把当前置顶列表写回磁盘。
+func savePins() {
+	ids := pinnedList()
+	sort.Strings(ids)
+	data, _ := json.MarshalIndent(ids, "", "  ")
+	os.WriteFile(pinsPath(), data, 0644)
+}
+
+// pinHandler 切换会话置顶状态：POST /api/pin?id=<id>&on=1|0
+func pinHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	on := r.URL.Query().Get("on") == "1"
+	pinsMu.Lock()
+	if on {
+		pins[id] = true
+	} else {
+		delete(pins, id)
+	}
+	pinsMu.Unlock()
+	savePins()
+	writeJSON(w, map[string]any{"ok": true, "pinned": on})
+}
+
+// isPinned 判断会话是否被置顶。
+func isPinned(id string) bool {
+	pinsMu.Lock()
+	defer pinsMu.Unlock()
+	return pins[id]
+}
+
+// ── 用量报表 ───────────────────────────────────────────────
+// 用量数据来自 ccusage（npx ccusage <source> session --json）—— 它读取同样
+// 的会话日志，但按 sessionId 去重并计算成本，比自行解析更准。结果缓存到
+// 磁盘，由用户「重新计算」触发刷新。前端自行按日/月/年汇总。
+
+// statsVersion 是用量缓存的格式版本，结构变更时递增以作废旧缓存。
+const statsVersion = 3
+
+// SessStat 是单个会话的用量聚合（来自 ccusage）。
+type SessStat struct {
+	Source   string  `json:"source"`  // codex | claude
+	Project  string  `json:"project"` // 项目名（Codex 无项目，归为 —）
+	Model    string  `json:"model"`   // 主力模型
+	Date     string  `json:"date"`    // YYYY-MM-DD（本地时区）
+	TokIn    int64   `json:"tokIn"`    // 输入 token（不含缓存）
+	TokCache int64   `json:"tokCache"` // 缓存 token（命中读取 + 创建）
+	TokOut   int64   `json:"tokOut"`   // 输出 token
+	Cost     float64 `json:"cost"`     // 成本（USD）
+}
+
+var (
+	statsMu        sync.Mutex
+	statsList      []SessStat
+	statsAt        int64  // 上次计算完成时间（毫秒）
+	statsComputing bool
+	statsErr       string // 上次计算的错误信息（如 ccusage 不可用）
+)
+
+func statsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".codex-viewer-stats.json")
+}
+
+type statsFile struct {
+	Version    int        `json:"version"`
+	ComputedAt int64      `json:"computedAt"`
+	Sessions   []SessStat `json:"sessions"`
+}
+
+// loadStats 从磁盘读取用量缓存；格式版本不符则忽略（等用户重算）。
+func loadStats() {
+	var c statsFile
+	if data, err := os.ReadFile(statsPath()); err == nil {
+		json.Unmarshal(data, &c)
+	}
+	if c.Version != statsVersion {
+		return
+	}
+	statsMu.Lock()
+	statsList = c.Sessions
+	statsAt = c.ComputedAt
+	statsMu.Unlock()
+}
+
+// saveStats 把用量缓存写回磁盘。
+func saveStats() {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	data, _ := json.MarshalIndent(statsFile{statsVersion, statsAt, statsList}, "", "  ")
+	os.WriteFile(statsPath(), data, 0644)
+}
+
+// computeStats 调用 ccusage 重新统计用量并刷新缓存。
+func computeStats() {
+	statsMu.Lock()
+	if statsComputing {
+		statsMu.Unlock()
+		return
+	}
+	statsComputing = true
+	statsMu.Unlock()
+	sendSSE(map[string]any{"t": "stats", "computing": true})
+
+	cl, e1 := runCcusage("claude")
+	cx, e2 := runCcusage("codex")
+	all := append(cl, cx...)
+	errMsg := ""
+	if e1 != nil && e2 != nil {
+		errMsg = "ccusage 调用失败，请确认已安装 Node / npx：" + e1.Error()
+	}
+
+	statsMu.Lock()
+	statsList = all
+	statsAt = time.Now().UnixMilli()
+	statsErr = errMsg
+	statsComputing = false
+	statsMu.Unlock()
+	saveStats()
+	sendSSE(map[string]any{"t": "stats", "computing": false, "computedAt": statsAt})
+}
+
+// runCcusage 经登录 shell 调用 `npx ccusage <source> session --json --offline`，
+// 登录 shell 用于取得 nvm 等环境里的 npx。
+func runCcusage(source string) ([]SessStat, error) {
+	cmd := exec.Command("/bin/zsh", "-lc",
+		"npx --prefer-offline -y ccusage "+source+" session --json --offline")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("ccusage %s 失败: %v", source, err)
+		return nil, err
+	}
+	if source == "claude" {
+		return parseCcusageClaude(out), nil
+	}
+	return parseCcusageCodex(out), nil
+}
+
+func parseCcusageClaude(data []byte) []SessStat {
+	var d struct {
+		Sessions []struct {
+			InputTokens         int64    `json:"inputTokens"`
+			OutputTokens        int64    `json:"outputTokens"`
+			CacheCreationTokens int64    `json:"cacheCreationTokens"`
+			CacheReadTokens     int64    `json:"cacheReadTokens"`
+			TotalCost           float64  `json:"totalCost"`
+			LastActivity        string   `json:"lastActivity"`
+			ProjectPath         string   `json:"projectPath"`
+			ModelsUsed          []string `json:"modelsUsed"`
+			ModelBreakdowns     []struct {
+				ModelName string  `json:"modelName"`
+				Cost      float64 `json:"cost"`
+			} `json:"modelBreakdowns"`
+		} `json:"sessions"`
+	}
+	if json.Unmarshal(data, &d) != nil {
+		return nil
+	}
+	out := make([]SessStat, 0, len(d.Sessions))
+	for _, s := range d.Sessions {
+		model := ""
+		if len(s.ModelsUsed) > 0 {
+			model = s.ModelsUsed[0]
+		}
+		best := -1.0
+		for _, m := range s.ModelBreakdowns {
+			if m.Cost > best {
+				best, model = m.Cost, m.ModelName
+			}
+		}
+		out = append(out, SessStat{
+			Source: "claude", Project: cleanProject(s.ProjectPath), Model: shortModel(model),
+			Date: ccDate(s.LastActivity), TokIn: s.InputTokens,
+			TokCache: s.CacheCreationTokens + s.CacheReadTokens,
+			TokOut:   s.OutputTokens, Cost: s.TotalCost,
+		})
+	}
+	return out
+}
+
+func parseCcusageCodex(data []byte) []SessStat {
+	var d struct {
+		Sessions []struct {
+			InputTokens       int64   `json:"inputTokens"`
+			OutputTokens      int64   `json:"outputTokens"`
+			CachedInputTokens int64   `json:"cachedInputTokens"`
+			CostUSD           float64 `json:"costUSD"`
+			LastActivity      string  `json:"lastActivity"`
+			Models            map[string]struct {
+				TotalTokens int64 `json:"totalTokens"`
+			} `json:"models"`
+		} `json:"sessions"`
+	}
+	if json.Unmarshal(data, &d) != nil {
+		return nil
+	}
+	out := make([]SessStat, 0, len(d.Sessions))
+	for _, s := range d.Sessions {
+		model := ""
+		var best int64 = -1
+		for name, m := range s.Models {
+			if m.TotalTokens > best {
+				best, model = m.TotalTokens, name
+			}
+		}
+		out = append(out, SessStat{
+			Source: "codex", Project: "—", Model: shortModel(model),
+			Date: ccDate(s.LastActivity), TokIn: s.InputTokens,
+			TokCache: s.CachedInputTokens, TokOut: s.OutputTokens, Cost: s.CostUSD,
+		})
+	}
+	return out
+}
+
+// ccDate 把 ccusage 的时间字段归一为本地 YYYY-MM-DD。
+func ccDate(s string) string {
+	if len(s) < 10 {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Local().Format("2006-01-02")
+	}
+	return s[:10]
+}
+
+// cleanProject 把 ccusage 的 projectPath（home 下用 - 编码的目录名）转可读。
+func cleanProject(p string) string {
+	if p == "" {
+		return "—"
+	}
+	home, _ := os.UserHomeDir()
+	p = strings.TrimPrefix(p, strings.ReplaceAll(home, "/", "-")+"-")
+	p = strings.TrimPrefix(p, "-")
+	if p == "" {
+		return "—"
+	}
+	return p
+}
+
+// shortModel 去掉模型名末尾的日期版本号，便于展示。
+func shortModel(m string) string {
+	if m == "" {
+		return "—"
+	}
+	if i := strings.LastIndex(m, "-"); i > 0 && len(m)-i == 9 {
+		if _, err := strconv.Atoi(m[i+1:]); err == nil {
+			return m[:i] // claude-haiku-4-5-20251001 → claude-haiku-4-5
+		}
+	}
+	return m
+}
+
+// statsHandler 返回所有会话的用量聚合，前端按日/月/年自行汇总。
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	statsMu.Lock()
+	list, at, computing, errMsg := statsList, statsAt, statsComputing, statsErr
+	statsMu.Unlock()
+	if list == nil {
+		list = []SessStat{}
+	}
+	writeJSON(w, map[string]any{
+		"sessions": list, "computedAt": at, "computing": computing, "error": errMsg,
+	})
+}
+
+// recomputeHandler 触发后台重新统计用量。
+func recomputeHandler(w http.ResponseWriter, r *http.Request) {
+	statsMu.Lock()
+	busy := statsComputing
+	statsMu.Unlock()
+	if !busy {
+		go computeStats()
+	}
+	writeJSON(w, map[string]any{"ok": true, "computing": true})
+}
+
 // Label 是 issue 标签（名称 + 颜色）。
 type Label struct {
 	Name  string `json:"name"`
@@ -1121,18 +1631,12 @@ func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
 	return list, nil
 }
 
-// refreshIssues 遍历配置中的仓库，刷新内存里的 issue 缓存。
+// refreshIssues 遍历关注的仓库，刷新内存里的 issue 缓存。
 func refreshIssues() {
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-
 	cfg := liveConfig()
 	var all []Issue
 	var errs []string
-	for _, rm := range cfg.Repos {
-		if strings.TrimSpace(rm.Repo) == "" {
-			continue
-		}
+	for _, rm := range watchedRepos() {
 		got, err := ghIssues(rm.Repo, cfg.Issue)
 		if err != nil {
 			errs = append(errs, rm.Repo+": "+err.Error())
@@ -1149,6 +1653,132 @@ func refreshIssues() {
 	issuesMu.Unlock()
 }
 
+// refreshAll 串行刷新 issue 与 PR 缓存（refreshMu 避免并发 gh 调用）。
+func refreshAll() {
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	refreshIssues()
+	refreshPRs()
+}
+
+// ── Pull Request ───────────────────────────────────────────
+
+// PR 是聚合后的单条 pull request。
+type PR struct {
+	Repo      string  `json:"repo"`
+	Number    int     `json:"number"`
+	Title     string  `json:"title"`
+	URL       string  `json:"url"`
+	Labels    []Label `json:"labels"`
+	UpdatedAt string  `json:"updatedAt"`
+	Author    string  `json:"author"`
+	IsDraft   bool    `json:"isDraft"`
+	Reason    string  `json:"reason"` // author（我创建）| review（待我 review）
+}
+
+var (
+	prsMu  sync.Mutex
+	prs    []PR
+	prsAt  time.Time
+	prsErr string
+)
+
+// ghPRList 调用 gh pr list 拉取某仓库的 open PR；
+// author / search 非空时分别作为 --author / --search 条件。
+func ghPRList(repo, author, search string, limit int) ([]PR, error) {
+	args := []string{"pr", "list", "--repo", repo, "--state", "open",
+		"--json", "number,title,labels,updatedAt,url,author,isDraft"}
+	if author != "" {
+		args = append(args, "--author", author)
+	}
+	if search != "" {
+		args = append(args, "--search", search)
+	}
+	if limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(limit))
+	}
+	cmd := exec.Command("/bin/zsh", "-lc", "gh "+shellJoin(args))
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	var raw []struct {
+		Number    int     `json:"number"`
+		Title     string  `json:"title"`
+		URL       string  `json:"url"`
+		UpdatedAt string  `json:"updatedAt"`
+		IsDraft   bool    `json:"isDraft"`
+		Labels    []Label `json:"labels"`
+		Author    struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	list := make([]PR, 0, len(raw))
+	for _, r := range raw {
+		list = append(list, PR{
+			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
+			Labels: r.Labels, UpdatedAt: r.UpdatedAt,
+			Author: r.Author.Login, IsDraft: r.IsDraft,
+		})
+	}
+	return list, nil
+}
+
+// ghPRs 拉取某仓库「我相关」的 PR：我创建的 + 待我 review 的，按编号去重。
+func ghPRs(repo string, limit int) ([]PR, error) {
+	mine, e1 := ghPRList(repo, "@me", "", limit)
+	review, e2 := ghPRList(repo, "", "review-requested:@me", limit)
+	if e1 != nil && e2 != nil {
+		return nil, e1
+	}
+	seen := map[int]bool{}
+	out := make([]PR, 0, len(mine)+len(review))
+	for _, p := range mine {
+		p.Reason = "author"
+		seen[p.Number] = true
+		out = append(out, p)
+	}
+	for _, p := range review {
+		if seen[p.Number] {
+			continue
+		}
+		p.Reason = "review"
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// refreshPRs 遍历关注的仓库，刷新内存里的 PR 缓存。
+func refreshPRs() {
+	limit := liveConfig().Issue.Limit
+	var all []PR
+	var errs []string
+	for _, rm := range watchedRepos() {
+		got, err := ghPRs(rm.Repo, limit)
+		if err != nil {
+			errs = append(errs, rm.Repo+": "+err.Error())
+			continue
+		}
+		all = append(all, got...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].UpdatedAt > all[j].UpdatedAt })
+
+	prsMu.Lock()
+	prs = all
+	prsAt = time.Now()
+	prsErr = strings.Join(errs, " · ")
+	prsMu.Unlock()
+}
+
 // configHandler：GET 返回配置；POST 保存配置并触发一次 issue 刷新。
 func configHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
@@ -1163,7 +1793,7 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reloadConfig() // 立即刷新缓存，让新配置即时生效
-		go refreshIssues()
+		go refreshAll()
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
@@ -1173,7 +1803,7 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 // issuesHandler 返回缓存的 issue 列表；?refresh=1 强制同步刷新。
 func issuesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("refresh") != "" {
-		refreshIssues()
+		refreshAll()
 	}
 	ic := liveConfig().Issue
 	issuesMu.Lock()
@@ -1184,6 +1814,73 @@ func issuesHandler(w http.ResponseWriter, r *http.Request) {
 		"error":      issuesErr,
 		"menuMax":    ic.MenuMax,
 		"showInMenu": ic.ShowInMenu,
+	})
+}
+
+// MenuSession 是菜单栏「活跃会话」标签页的单条会话。
+type MenuSession struct {
+	ID      string `json:"id"`
+	Source  string `json:"source"`
+	Title   string `json:"title"`
+	Project string `json:"project"`
+	Mtime   int64  `json:"mtime"`
+}
+
+// activeSessions 返回文件 mtime 在 60 秒内的会话，按 mtime 倒序。
+func activeSessions() []MenuSession {
+	cutoff := time.Now().UnixMilli() - 60*1000
+	mu.Lock()
+	out := make([]MenuSession, 0, 8)
+	for _, st := range states {
+		if st.sum.Mtime < cutoff {
+			continue
+		}
+		title := st.sum.Title
+		if title == "" {
+			title = st.sum.Preview
+		}
+		project := ""
+		if st.sum.Cwd != "" {
+			project = filepath.Base(st.sum.Cwd)
+		}
+		out = append(out, MenuSession{
+			ID: st.sum.ID, Source: st.sum.Source, Title: title,
+			Project: project, Mtime: st.sum.Mtime,
+		})
+	}
+	mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Mtime > out[j].Mtime })
+	return out
+}
+
+// menubarHandler 一次返回菜单栏三个标签页（issue / PR / 活跃会话）所需的全部数据。
+func menubarHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("refresh") != "" {
+		refreshAll()
+	}
+	ic := liveConfig().Issue
+	issuesMu.Lock()
+	is, isAt, isErr := issues, issuesAt, issuesErr
+	issuesMu.Unlock()
+	prsMu.Lock()
+	pl, plAt, plErr := prs, prsAt, prsErr
+	prsMu.Unlock()
+	if is == nil {
+		is = []Issue{}
+	}
+	if pl == nil {
+		pl = []PR{}
+	}
+	writeJSON(w, map[string]any{
+		"showInMenu":    ic.ShowInMenu,
+		"menuMax":       ic.MenuMax,
+		"issues":        is,
+		"issuesUpdated": isAt.UnixMilli(),
+		"issuesError":   isErr,
+		"prs":           pl,
+		"prsUpdated":    plAt.UnixMilli(),
+		"prsError":      plErr,
+		"sessions":      activeSessions(),
 	})
 }
 
@@ -1318,4 +2015,292 @@ func claudeProjectsHandler(w http.ResponseWriter, r *http.Request) {
 func rescanHandler(w http.ResponseWriter, r *http.Request) {
 	go scan()
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// ghReposHandler 列出当前 gh 登录账号下的全部仓库（前端仓库设置下拉用）
+// 不要求 gh 登录态：未登录时返回 ok:false，前端降级到原文本输入
+func ghReposHandler(w http.ResponseWriter, r *http.Request) {
+	out, err := exec.Command("gh", "repo", "list", "--json",
+		"nameWithOwner,description,isPrivate", "--limit", "300").Output()
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "gh repo list 失败：" + err.Error()})
+		return
+	}
+	var arr []map[string]any
+	if jerr := json.Unmarshal(out, &arr); jerr != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "解析 gh 输出失败：" + jerr.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "repos": arr})
+}
+
+// folderPickHandler 调起 macOS 原生「选择文件夹」对话框，返回 POSIX 路径
+// osascript 在用户取消时 exit 非零；当作 cancelled=true 而非错误
+func folderPickHandler(w http.ResponseWriter, r *http.Request) {
+	out, err := exec.Command("osascript", "-e",
+		`POSIX path of (choose folder with prompt "选择本地路径")`).Output()
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "cancelled": true})
+		return
+	}
+	path := strings.TrimRight(strings.TrimSpace(string(out)), "/")
+	writeJSON(w, map[string]any{"ok": true, "path": path})
+}
+
+// ── 局域网 / 文件系统 / CLI 调度 ────────────────────────────
+
+// lanURLHandler 返回所有可达的 LAN URL（含 token），供前端"分享链接"按钮使用。
+// 端口从请求 Host 反查 —— 不依赖闭包，跟实际监听端口完全一致。
+func lanURLHandler(w http.ResponseWriter, r *http.Request) {
+	port := 0
+	if _, p, err := net.SplitHostPort(r.Host); err == nil {
+		port, _ = strconv.Atoi(p)
+	}
+	writeJSON(w, map[string]any{
+		"urls":  lanURLs(port),
+		"token": serverToken,
+		"port":  port,
+	})
+}
+
+// fsHomeHandler 返回 $HOME 与一些常用快捷目录，用作目录选择器默认入口。
+func fsHomeHandler(w http.ResponseWriter, r *http.Request) {
+	home, _ := os.UserHomeDir()
+	shortcuts := []string{home}
+	for _, sub := range []string{"work", "Code", "code", "Projects", "projects", "Desktop", "Documents"} {
+		p := filepath.Join(home, sub)
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			shortcuts = append(shortcuts, p)
+		}
+	}
+	writeJSON(w, map[string]any{
+		"home":      home,
+		"shortcuts": shortcuts,
+		"recent":    liveConfig().Recent.Cwds,
+	})
+}
+
+// fsLsHandler 列出指定路径下的子目录。
+//   path=...       绝对路径；默认 $HOME
+//   showHidden=1   是否返回点开头目录
+//
+// 过滤掉常见的噪音目录（node_modules / .git 等），上限 500 条避免大目录爆量。
+func fsLsHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p := strings.TrimSpace(q.Get("path"))
+	if p == "" {
+		p, _ = os.UserHomeDir()
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "path": p})
+		return
+	}
+	if !fi.IsDir() {
+		writeJSON(w, map[string]any{"ok": false, "error": "不是目录", "path": p})
+		return
+	}
+	showHidden := q.Get("showHidden") == "1"
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "path": p})
+		return
+	}
+	noisy := map[string]bool{
+		"node_modules": true, "__pycache__": true, ".git": true,
+		"venv": true, ".venv": true, "vendor": true, "target": true,
+	}
+	type entry struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	dirs := make([]entry, 0, len(ents))
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !showHidden && strings.HasPrefix(name, ".") {
+			continue
+		}
+		if noisy[name] {
+			continue
+		}
+		dirs = append(dirs, entry{Name: name, Path: filepath.Join(p, name)})
+		if len(dirs) >= 500 {
+			break
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name)
+	})
+	parent := filepath.Dir(p)
+	if parent == p {
+		parent = ""
+	}
+	writeJSON(w, map[string]any{
+		"ok":     true,
+		"path":   p,
+		"parent": parent,
+		"dirs":   dirs,
+	})
+}
+
+// RunReq 是 /api/run 的请求体；agent ∈ {claude,codex}，mode ∈ {new,resume}。
+type RunReq struct {
+	Agent  string `json:"agent"`
+	Mode   string `json:"mode"`
+	Cwd    string `json:"cwd"`
+	Sid    string `json:"sid"`
+	Prompt string `json:"prompt"`
+}
+
+// runHandler 后台 spawn CLI；输出全部丢弃，依赖会话扫描器把新会话自然拉出。
+// 命令参数全部用 exec.Command 的 argv 形式传，避免任何 shell 拼接 → 天然防注入。
+func runHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req RunReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "请求体解析失败：" + err.Error()})
+		return
+	}
+	req.Agent = strings.TrimSpace(req.Agent)
+	req.Mode = strings.TrimSpace(req.Mode)
+	req.Cwd = strings.TrimSpace(req.Cwd)
+	req.Sid = strings.TrimSpace(req.Sid)
+	req.Prompt = strings.TrimSpace(req.Prompt)
+
+	if req.Agent != "claude" && req.Agent != "codex" {
+		writeJSON(w, map[string]any{"ok": false, "error": "agent 必须是 claude 或 codex"})
+		return
+	}
+	if req.Mode != "new" && req.Mode != "resume" {
+		writeJSON(w, map[string]any{"ok": false, "error": "mode 必须是 new 或 resume"})
+		return
+	}
+	if req.Prompt == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "prompt 不能为空"})
+		return
+	}
+	if req.Mode == "resume" && req.Sid == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "resume 模式需要 sid"})
+		return
+	}
+	if req.Cwd == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "cwd 不能为空"})
+		return
+	}
+	if fi, err := os.Stat(req.Cwd); err != nil || !fi.IsDir() {
+		writeJSON(w, map[string]any{"ok": false, "error": "cwd 不存在或不是目录：" + req.Cwd})
+		return
+	}
+
+	args := buildRunArgs(req)
+	bin := args[0]
+	// 显式 LookPath：报错时给出比 "executable not found in $PATH" 更友好的提示。
+	resolved, err := exec.LookPath(bin)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false,
+			"error": "找不到 " + bin + "；当前 PATH=" + os.Getenv("PATH"),
+			"cmd":   shellJoin(args)})
+		return
+	}
+	cmd := exec.Command(resolved, args[1:]...)
+	cmd.Dir = req.Cwd
+	// 不接管输出 —— 后台跑到结束即可
+	if err := cmd.Start(); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "cmd": shellJoin(args)})
+		return
+	}
+	go cmd.Wait() // 回收僵尸
+	pushRecentCwd(req.Cwd)
+	writeJSON(w, map[string]any{"ok": true, "pid": cmd.Process.Pid, "cmd": shellJoin(args)})
+}
+
+// buildRunArgs 把请求映射成 argv。
+// claude  : claude [--resume sid] -p <prompt> --permission-mode bypassPermissions --allow-dangerously-skip-permissions
+// codex   : codex exec [resume sid] <prompt>
+func buildRunArgs(req RunReq) []string {
+	switch req.Agent {
+	case "claude":
+		args := []string{"claude"}
+		if req.Mode == "resume" {
+			args = append(args, "--resume", req.Sid)
+		}
+		args = append(args, "-p", req.Prompt,
+			"--permission-mode", "bypassPermissions",
+			"--allow-dangerously-skip-permissions")
+		return args
+	case "codex":
+		args := []string{"codex", "exec"}
+		if req.Mode == "resume" {
+			args = append(args, "resume", req.Sid)
+		}
+		args = append(args, req.Prompt)
+		return args
+	}
+	return nil
+}
+
+// enrichProcessPath 把 login shell 的 PATH 写回当前进程，让 exec.LookPath
+// 能找到 claude/codex/gh 等用户安装的命令。
+// Dock/launchd 启动时 PATH 极简（往往只剩 /usr/bin:/bin:/usr/sbin:/sbin），
+// 而 brew / pipx / claude installer 都装到非默认前缀，故必须 enrich 一次。
+//
+// 兜底：常见路径无脑加进 PATH，保证即使 zsh 没装/失败也能找到 brew 的命令。
+func enrichProcessPath() {
+	cur := os.Getenv("PATH")
+	parts := strings.Split(cur, ":")
+	seen := map[string]bool{}
+	for _, p := range parts {
+		if p != "" {
+			seen[p] = true
+		}
+	}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		parts = append(parts, p)
+		seen[p] = true
+	}
+	// 从 login shell 抓一次
+	if out, err := exec.Command("/bin/zsh", "-lc", "echo -n $PATH").Output(); err == nil {
+		for _, p := range strings.Split(strings.TrimSpace(string(out)), ":") {
+			add(p)
+		}
+	}
+	// 常见安装位置兜底
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{
+		"/opt/homebrew/bin", "/opt/homebrew/sbin",
+		"/usr/local/bin", "/usr/local/sbin",
+		filepath.Join(home, ".local/bin"),
+		filepath.Join(home, "bin"),
+		filepath.Join(home, ".cargo/bin"),
+	} {
+		add(p)
+	}
+	os.Setenv("PATH", strings.Join(parts, ":"))
+}
+
+// pushRecentCwd 把 cwd 推到最近列表顶端，去重，保留前 10 条。
+func pushRecentCwd(cwd string) {
+	cfg := loadConfig()
+	keep := []string{cwd}
+	for _, x := range cfg.Recent.Cwds {
+		if x != cwd && len(keep) < 10 {
+			keep = append(keep, x)
+		}
+	}
+	cfg.Recent.Cwds = keep
+	if err := saveConfig(cfg); err == nil {
+		cfgCache.Store(cfg)
+	}
 }

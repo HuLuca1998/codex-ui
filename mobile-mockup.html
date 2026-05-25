@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Viewer — 移动端设计稿（A 抽屉式 · 768 断点）</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style>
+  :root{
+    --bg:#070708; --panel:#0f0f10; --aside:#0b0b0c;
+    --line:rgba(255,255,255,.05); --line2:rgba(255,255,255,.07);
+    --t1:#ededf0; --t2:#bdbdc4; --t3:#9a9aa3; --t4:#74747e; --t5:#54545d; --t6:#3a3a42;
+    --accent:#9aa0e8; --teal:#84cabb; --sage:#7fc99a; --sand:#d6b878; --rose:#d98a8f;
+  }
+  html,body{background:#0a0a0c;color:var(--t2);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','PingFang SC',sans-serif;}
+  /* 设计板背景：细网格 + 渐变 */
+  body{
+    background:
+      radial-gradient(circle at 30% 0%, rgba(154,160,232,.04), transparent 60%),
+      radial-gradient(circle at 80% 100%, rgba(132,202,187,.03), transparent 60%),
+      linear-gradient(rgba(255,255,255,.012) 1px, transparent 1px) 0 0/40px 40px,
+      linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px) 0 0/40px 40px,
+      #0a0a0c;
+    min-height:100vh;
+  }
+  /* 设备机身：iPhone 14 Pro 393x852 + 极简边框 */
+  .device{
+    width:393px; flex:0 0 393px;
+    border-radius:42px;
+    background:#000;
+    padding:8px;
+    box-shadow:
+      0 0 0 1px rgba(255,255,255,.08),
+      0 40px 100px -20px rgba(0,0,0,.7),
+      inset 0 0 0 2px #1a1a1d;
+  }
+  .screen{
+    width:100%; height:852px;
+    border-radius:34px;
+    overflow:hidden; position:relative;
+    background:var(--panel);
+    display:flex; flex-direction:column;
+  }
+  /* 动态岛 */
+  .island{
+    position:absolute; top:11px; left:50%; transform:translateX(-50%);
+    width:120px; height:34px; border-radius:17px; background:#000; z-index:50;
+  }
+  /* 状态栏 */
+  .statusbar{
+    height:54px; flex:none; padding:0 28px;
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:15px; font-weight:600; color:var(--t1); letter-spacing:.5px;
+    z-index:40; position:relative;
+  }
+  .statusbar .right{ display:flex; align-items:center; gap:6px; font-size:13px; }
+
+  /* —— 复刻应用核心样式 —— */
+  .ttl{font-size:15px;font-weight:600;color:var(--t1);line-height:1.3;}
+  .ttl-sel{color:var(--t1);}
+  .prev{font-size:13.5px;color:var(--t3);line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;}
+  .meta{font-size:12px;color:var(--t5);display:flex;align-items:center;gap:8px;}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none;}
+  .dot.live{background:var(--sage);box-shadow:0 0 0 3px rgba(127,201,154,.18);}
+  .dot.idle{background:var(--t6);}
+  .badge{font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;padding:1px 6px;border-radius:5px;background:rgba(154,160,232,.14);color:var(--accent);}
+  .sid{font-family:ui-monospace,'SF Mono',monospace;color:var(--t6);font-size:11px;margin-left:auto;}
+  .item{display:flex;flex-direction:column;gap:6px;padding:14px 14px;border-radius:16px;}
+  .item.sel{background:rgba(255,255,255,.06);}
+  .item.sub{margin-left:22px;padding:8px 12px;border-radius:12px;position:relative;}
+  .item.sub::before{content:"";position:absolute;left:-12px;top:-8px;bottom:8px;width:1px;background:var(--line2);}
+  .item.sub.last::before{bottom:calc(100% - 18px);}
+  .item.sub::after{content:"";position:absolute;left:-12px;top:18px;width:10px;height:1px;background:var(--line2);}
+  .item.sub .ttl{font-size:14px;color:var(--t3);}
+  .item.sub .prev{font-size:12.5px;}
+  .pill{font-size:13px;padding:6px 14px;border-radius:999px;background:rgba(255,255,255,.04);color:var(--t3);white-space:nowrap;}
+  .pill.on{background:rgba(154,160,232,.16);color:var(--accent);font-weight:500;}
+  .fpill{font-size:12.5px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.04);color:var(--t3);display:flex;align-items:center;gap:5px;white-space:nowrap;}
+  .fpill.on{background:rgba(255,255,255,.06);color:var(--t2);}
+  .fpill .d{width:5px;height:5px;border-radius:50%;}
+  .chev{flex:none;width:22px;height:22px;display:grid;place-items:center;border-radius:7px;background:rgba(255,255,255,.04);color:var(--t4);font-size:11px;}
+  .subcnt{font-size:11px;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.05);color:var(--t4);}
+  .tag-claude{font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px;background:rgba(132,202,187,.13);color:var(--teal);text-transform:lowercase;}
+  .tag-codex{font-size:10px;font-weight:600;padding:2px 7px;border-radius:5px;background:rgba(154,160,232,.13);color:var(--accent);text-transform:lowercase;}
+
+  /* 标题 / 说明 */
+  .label{margin-top:18px;color:var(--t1);font-size:14px;font-weight:600;text-align:center;}
+  .desc{margin-top:6px;color:var(--t4);font-size:12.5px;text-align:center;max-width:393px;line-height:1.55;}
+  h1{color:var(--t1);font-size:22px;font-weight:700;letter-spacing:-.3px;}
+  h1 small{color:var(--t4);font-weight:400;font-size:13px;margin-left:10px;letter-spacing:0;}
+  .stage{display:flex;flex-wrap:wrap;gap:56px 36px;padding:36px;justify-content:center;}
+  .frame{display:flex;flex-direction:column;align-items:center;}
+  .note{margin:0 36px 24px;padding:18px 22px;border-radius:14px;background:rgba(255,255,255,.025);border:1px solid var(--line);font-size:13px;color:var(--t3);line-height:1.7;max-width:980px;}
+  .note b{color:var(--t1);font-weight:600;}
+  .note code{font-family:ui-monospace,monospace;background:rgba(255,255,255,.05);padding:1px 6px;border-radius:5px;font-size:12px;color:var(--accent);}
+  header.hero{padding:48px 36px 12px;}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>移动端设计稿 <small>方案 A · 抽屉式侧栏 · 断点 768px</small></h1>
+  <div class="note" style="margin-top:18px">
+    <b>5 张稿子覆盖核心场景：</b>
+    ① 默认进入 = 全屏会话视图，左上 <code>☰</code> 唤出会话列表抽屉 ·
+    ② 抽屉打开（含子代理树折叠态） ·
+    ③ 长按列表项弹底部菜单（替代右键） ·
+    ④ 列表项左滑显置顶（手势辅助） ·
+    ⑤ 设置全屏 sheet（横向 tab 替换左侧导航）。<br>
+    <b>桌面 ≥768px 保持原布局零回归</b>，所有改动收敛在 <code>md:</code> 前缀以下。
+  </div>
+</header>
+
+<div class="stage">
+
+  <!-- ───────────────────────── 1. 默认进入：会话视图 ───────────────────────── -->
+  <div class="frame">
+    <div class="device"><div class="screen">
+      <div class="island"></div>
+      <div class="statusbar">
+        <span>9:41</span>
+        <span class="right">●●●●● <span style="margin-left:6px">5G</span> ▮</span>
+      </div>
+      <!-- header -->
+      <div style="height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line);">
+        <div style="width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:var(--t2);background:rgba(255,255,255,.04);font-size:18px;">☰</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14.5px;font-weight:600;color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构 grpc 健康检查</div>
+          <div style="font-size:11px;color:var(--t5);margin-top:1px;">claude · 5m · ⎇ main · ⊂3</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.04);font-size:11.5px;color:var(--t3);">
+          <span class="dot live"></span>实时
+        </div>
+      </div>
+      <!-- 消息流 -->
+      <div style="flex:1;min-height:0;overflow:hidden;padding:18px 16px 200px;display:flex;flex-direction:column;gap:18px;">
+        <div style="display:flex;gap:10px;">
+          <div style="width:28px;height:28px;border-radius:8px;background:#243f3a;color:var(--teal);display:grid;place-items:center;font-size:12px;flex:none;font-weight:600;">U</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:11px;color:var(--t5);margin-bottom:4px;">你 · 14:22</div>
+            <div style="font-size:15px;color:var(--t2);line-height:1.55;">把超时阈值改成可配置的，默认 30s，环境变量覆盖。</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <div style="width:28px;height:28px;border-radius:8px;background:#2f3048;color:var(--accent);display:grid;place-items:center;font-size:12px;flex:none;font-weight:600;">C</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:11px;color:var(--t5);margin-bottom:4px;">Claude · 14:22</div>
+            <div style="font-size:15px;color:var(--t2);line-height:1.55;">我加了 <span style="font-family:ui-monospace;color:var(--accent);background:rgba(154,160,232,.1);padding:1px 6px;border-radius:4px;">GRPC_HEALTH_TIMEOUT</span>，默认 30s，覆盖现有 hardcode。</div>
+            <!-- tool card -->
+            <div style="margin-top:10px;border:1px solid var(--line2);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.02);">
+              <div style="padding:9px 12px;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--t3);">
+                <span style="width:22px;height:22px;border-radius:7px;background:rgba(154,160,232,.13);color:var(--accent);display:grid;place-items:center;font-size:11px;">⌬</span>
+                Edit · <span style="font-family:ui-monospace;color:var(--t2);">healthcheck/server.go</span>
+                <span style="margin-left:auto;font-size:10px;color:var(--sage);background:rgba(127,201,154,.14);padding:1px 6px;border-radius:5px;">OK</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- composer -->
+      <div style="position:absolute;left:0;right:0;bottom:0;padding:10px 10px calc(10px + env(safe-area-inset-bottom,18px));background:linear-gradient(to top, var(--panel) 70%, transparent);">
+        <div style="background:rgba(23,23,24,.92);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.07);border-radius:18px;">
+          <div style="display:flex;align-items:flex-end;gap:10px;padding:12px 14px 10px;">
+            <span style="color:var(--t5);font-size:14px;padding-bottom:2px;">›</span>
+            <div style="flex:1;color:var(--t5);font-size:16px;line-height:1.4;min-height:22px;">给 Claude 发送消息，回车后台执行…</div>
+            <div style="width:32px;height:32px;border-radius:10px;background:var(--accent);color:#0f0f10;font-weight:bold;font-size:16px;display:grid;place-items:center;flex:none;">↑</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid rgba(255,255,255,.05);overflow-x:auto;">
+            <div style="font-size:11.5px;color:var(--accent);background:rgba(154,160,232,.13);padding:5px 11px;border-radius:12px;font-weight:500;flex:none;">↻ 继续</div>
+            <div style="flex:1;min-width:8px;"></div>
+            <div class="fpill on"><span class="d" style="background:var(--accent)"></span>对话</div>
+            <div class="fpill"><span class="d" style="background:var(--sand)"></span>思考</div>
+            <div class="fpill"><span class="d" style="background:var(--teal)"></span>工具</div>
+            <div class="fpill on">⤓</div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <div class="label">① 默认进入 · 会话视图</div>
+    <div class="desc">左上 ☰ 唤出列表抽屉。Composer 用 <code>env(safe-area-inset-bottom)</code> 避开 home indicator；筛选胶囊横向溢出滚动而非折行。</div>
+  </div>
+
+  <!-- ───────────────────────── 2. 抽屉打开 ───────────────────────── -->
+  <div class="frame">
+    <div class="device"><div class="screen">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span class="right">●●●●● <span style="margin-left:6px">5G</span> ▮</span></div>
+      <!-- 主区（被遮罩） -->
+      <div style="position:absolute;inset:0;top:54px;background:var(--panel);"></div>
+      <div style="position:absolute;inset:0;top:54px;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);z-index:5;"></div>
+      <!-- 抽屉 -->
+      <div style="position:absolute;left:0;top:0;bottom:0;width:332px;background:var(--aside);z-index:10;display:flex;flex-direction:column;box-shadow:6px 0 30px rgba(0,0,0,.6);">
+        <!-- 留出状态栏 -->
+        <div style="height:54px;flex:none;"></div>
+        <!-- Logo -->
+        <div style="display:flex;align-items:center;gap:12px;padding:18px 18px 14px;">
+          <div style="width:34px;height:34px;border-radius:12px;background:#2f3048;color:var(--accent);display:grid;place-items:center;font-size:16px;font-weight:700;flex:none;">C</div>
+          <div style="min-width:0;flex:1;">
+            <div style="font-size:14px;font-weight:600;color:var(--t1);">Session Viewer</div>
+            <div style="font-size:11px;color:var(--t5);">codex · claude 实时监控</div>
+          </div>
+          <div style="width:36px;height:36px;border-radius:11px;background:rgba(255,255,255,.04);color:var(--t3);display:grid;place-items:center;font-size:18px;">✕</div>
+        </div>
+        <!-- 视图切换 -->
+        <div style="display:flex;gap:6px;padding:0 14px 8px;">
+          <div class="pill on">会话</div>
+          <div class="pill">报表</div>
+        </div>
+        <!-- 来源 -->
+        <div style="display:flex;gap:6px;padding:4px 14px;">
+          <div class="pill on">全部</div>
+          <div class="pill">Codex</div>
+          <div class="pill">Claude</div>
+        </div>
+        <!-- 搜索 -->
+        <div style="padding:10px 14px 8px;">
+          <div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:14px;background:rgba(255,255,255,.04);">
+            <span style="color:var(--t5);font-size:15px;">⌕</span>
+            <span style="color:var(--t5);font-size:14.5px;">搜索 标题 / 路径</span>
+          </div>
+        </div>
+        <!-- 日期 -->
+        <div style="display:flex;gap:6px;padding:0 14px 12px;overflow-x:auto;">
+          <div class="pill">全部</div>
+          <div class="pill on">今天</div>
+          <div class="pill">本周</div>
+          <div class="pill">本月</div>
+        </div>
+        <!-- 列表 -->
+        <div style="padding:6px 8px 0;flex:1;min-height:0;overflow:hidden;">
+          <div style="padding:6px 10px 8px;display:flex;align-items:center;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:1.2px;color:var(--t5);text-transform:uppercase;">会话</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--t5);">14</span>
+          </div>
+          <!-- 父项 · 已展开 -->
+          <div class="item sel">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="dot live"></span>
+              <span class="ttl ttl-sel" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构 grpc 健康检查</span>
+              <span class="subcnt">⊂3</span>
+              <span class="chev">▾</span>
+            </div>
+            <div class="prev">把超时阈值改成可配置的，默认 30s …</div>
+            <div class="meta"><span class="tag-claude">claude</span><span>5m</span><span class="sid">d1db76**62</span></div>
+          </div>
+          <div class="item sub">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="dot live"></span>
+              <span class="ttl" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">排查 panic 调用栈</span>
+            </div>
+            <div class="meta"><span class="tag-claude">claude</span><span>2m</span></div>
+          </div>
+          <div class="item sub last">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="dot idle"></span>
+              <span class="ttl" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">整理 PR 描述</span>
+            </div>
+            <div class="meta"><span class="tag-claude">claude</span><span>9m</span></div>
+          </div>
+          <!-- 普通父项（折叠态） -->
+          <div class="item">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="dot idle"></span>
+              <span class="ttl" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">codex-ui 移动端适配</span>
+              <span class="subcnt">⊂2</span>
+              <span class="chev">▸</span>
+            </div>
+            <div class="prev">先做架构分析，再出设计稿</div>
+            <div class="meta"><span class="tag-codex">codex</span><span>1h</span><span class="sid">a8e3**ff</span></div>
+          </div>
+        </div>
+        <!-- 底栏 -->
+        <div style="flex:none;padding:14px 16px calc(14px + env(safe-area-inset-bottom,18px));display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);font-size:12px;color:var(--t5);">
+          <span class="dot live"></span>实时监听
+          <div style="margin-left:auto;display:flex;gap:6px;">
+            <div style="padding:8px 12px;border-radius:10px;background:rgba(154,160,232,.13);color:var(--accent);font-size:12.5px;font-weight:500;">+ 新任务</div>
+            <div style="width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.04);color:var(--t4);display:grid;place-items:center;font-size:15px;">⇪</div>
+            <div style="width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.04);color:var(--t4);display:grid;place-items:center;font-size:16px;">⚙</div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <div class="label">② 抽屉打开 · 列表 + 子代理树</div>
+    <div class="desc">抽屉宽 332px（≈85%），剩余 60px 露出主区遮罩用于点击关闭。父项 <code>⊂3</code> 徽章 + 展开箭头与桌面端逻辑共用。</div>
+  </div>
+
+  <!-- ───────────────────────── 3. 长按底部菜单 ───────────────────────── -->
+  <div class="frame">
+    <div class="device"><div class="screen">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span class="right">●●●●● <span style="margin-left:6px">5G</span> ▮</span></div>
+      <!-- 简化的抽屉背景（同 #2 简化）-->
+      <div style="position:absolute;inset:0;top:54px;background:var(--aside);"></div>
+      <div style="position:absolute;left:0;right:0;top:54px;height:100%;background:rgba(0,0,0,.5);z-index:5;"></div>
+      <!-- 被长按的项（高亮+缩放反馈）-->
+      <div style="position:absolute;left:14px;right:14px;top:200px;z-index:6;background:rgba(154,160,232,.10);border:1px solid rgba(154,160,232,.22);border-radius:16px;padding:14px;transform:scale(.98);box-shadow:0 12px 30px rgba(0,0,0,.4);">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span class="dot live"></span>
+          <span class="ttl ttl-sel" style="flex:1;">重构 grpc 健康检查</span>
+          <span class="subcnt" style="background:rgba(154,160,232,.2);color:var(--accent);">⊂3</span>
+        </div>
+        <div class="prev" style="margin-top:6px;color:var(--t2);">把超时阈值改成可配置的，默认 30s …</div>
+        <div class="meta" style="margin-top:6px;"><span class="tag-claude">claude</span><span>5m</span></div>
+      </div>
+      <!-- 底部菜单 sheet -->
+      <div style="position:absolute;left:0;right:0;bottom:0;z-index:30;background:#1c1c1e;border-top-left-radius:24px;border-top-right-radius:24px;box-shadow:0 -20px 50px rgba(0,0,0,.6);padding:10px 0 calc(20px + env(safe-area-inset-bottom,18px));">
+        <div style="width:38px;height:5px;border-radius:3px;background:rgba(255,255,255,.18);margin:6px auto 14px;"></div>
+        <div style="padding:0 8px;">
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:14px;color:var(--sand);font-size:15.5px;">
+            <span style="width:24px;text-align:center;">★</span>置顶
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:14px;color:var(--t1);font-size:15.5px;">
+            <span style="width:24px;text-align:center;">▸</span>展开子代理
+          </div>
+          <div style="height:1px;background:rgba(255,255,255,.06);margin:6px 16px;"></div>
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:14px;color:var(--t2);font-size:15.5px;">
+            <span style="width:24px;text-align:center;">⇕</span>展开全部子代理
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:14px;color:var(--t2);font-size:15.5px;">
+            <span style="width:24px;text-align:center;">⇲</span>折叠全部子代理
+          </div>
+          <div style="height:1px;background:rgba(255,255,255,.06);margin:6px 16px;"></div>
+          <div style="margin:8px 12px 0;padding:14px;text-align:center;border-radius:14px;background:rgba(255,255,255,.05);color:var(--t2);font-size:15.5px;font-weight:500;">取消</div>
+        </div>
+      </div>
+    </div></div>
+    <div class="label">③ 长按弹底部菜单</div>
+    <div class="desc">替代桌面右键菜单：长按 500ms 触发振动反馈 + 缩放反馈，菜单从底部升起，操作按 iOS Action Sheet 范式。</div>
+  </div>
+
+  <!-- ───────────────────────── 4. 左滑手势 ───────────────────────── -->
+  <div class="frame">
+    <div class="device"><div class="screen">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span class="right">●●●●● <span style="margin-left:6px">5G</span> ▮</span></div>
+      <div style="position:absolute;inset:0;top:54px;background:var(--aside);display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;gap:12px;padding:18px 18px 14px;">
+          <div style="width:34px;height:34px;border-radius:12px;background:#2f3048;color:var(--accent);display:grid;place-items:center;font-size:16px;font-weight:700;flex:none;">C</div>
+          <div style="flex:1;font-size:14px;font-weight:600;color:var(--t1);">Session Viewer</div>
+          <div style="width:36px;height:36px;border-radius:11px;background:rgba(255,255,255,.04);color:var(--t3);display:grid;place-items:center;font-size:18px;">✕</div>
+        </div>
+        <div style="display:flex;gap:6px;padding:0 14px 12px;">
+          <div class="pill on">全部</div><div class="pill">Codex</div><div class="pill">Claude</div>
+        </div>
+        <!-- 列表项 1：正在被左滑 -->
+        <div style="margin:6px 8px;position:relative;height:74px;">
+          <!-- 滑出后露出的操作背景 -->
+          <div style="position:absolute;inset:0;border-radius:16px;background:linear-gradient(to right, transparent 60%, rgba(214,184,120,.20) 60%);display:flex;align-items:center;justify-content:flex-end;padding-right:18px;">
+            <div style="display:flex;align-items:center;gap:6px;color:var(--sand);font-size:13px;font-weight:600;">
+              <span style="font-size:16px;">★</span>置顶
+            </div>
+          </div>
+          <!-- 实际内容（已被左移 76px）-->
+          <div class="item" style="position:absolute;left:-76px;right:76px;top:0;background:rgba(255,255,255,.02);box-shadow:-8px 0 16px rgba(0,0,0,.3);">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="dot live"></span>
+              <span class="ttl ttl-sel" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">重构 grpc 健康检查</span>
+              <span class="subcnt">⊂3</span>
+            </div>
+            <div class="prev">把超时阈值改成可配置 …</div>
+          </div>
+        </div>
+        <!-- 后续普通列表项 -->
+        <div class="item">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="dot idle"></span>
+            <span class="ttl" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">codex-ui 移动端适配</span>
+            <span class="subcnt">⊂2</span><span class="chev">▸</span>
+          </div>
+          <div class="prev">先做架构分析，再出设计稿</div>
+          <div class="meta"><span class="tag-codex">codex</span><span>1h</span></div>
+        </div>
+        <div class="item">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="dot idle"></span>
+            <span class="ttl" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">pp-game 老桌台对接清单</span>
+          </div>
+          <div class="prev">baccarat / roulette / dragon …</div>
+          <div class="meta"><span class="tag-claude">claude</span><span>3h</span></div>
+        </div>
+        <div class="item">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span class="dot idle"></span>
+            <span class="ttl" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">hab-admin 字段同步报错</span>
+          </div>
+          <div class="meta"><span class="tag-claude">claude</span><span>昨天</span></div>
+        </div>
+      </div>
+    </div></div>
+    <div class="label">④ 左滑手势 · 置顶</div>
+    <div class="desc">阈值 60px 内自动回弹；超过阈值松手 = 执行操作。手势冲突时长按为兜底入口；首次出现给一次气泡提示。</div>
+  </div>
+
+  <!-- ───────────────────────── 5. 设置 sheet ───────────────────────── -->
+  <div class="frame">
+    <div class="device"><div class="screen">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span class="right">●●●●● <span style="margin-left:6px">5G</span> ▮</span></div>
+      <div style="flex:1;display:flex;flex-direction:column;background:var(--panel);">
+        <!-- header -->
+        <div style="height:54px;flex:none;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--line);">
+          <span style="font-size:16px;font-weight:600;color:var(--t1);">设置</span>
+          <div style="margin-left:auto;width:36px;height:36px;border-radius:11px;background:rgba(255,255,255,.04);color:var(--t3);display:grid;place-items:center;font-size:18px;">✕</div>
+        </div>
+        <!-- 横向 tab（替代桌面左侧导航）-->
+        <div style="display:flex;gap:4px;padding:10px 12px;overflow-x:auto;border-bottom:1px solid var(--line);">
+          <div class="pill on">通用</div>
+          <div class="pill">数据源</div>
+          <div class="pill">性能</div>
+          <div class="pill">CLI 路径</div>
+          <div class="pill">分享 · LAN</div>
+        </div>
+        <!-- 设置项 -->
+        <div style="flex:1;padding:8px 16px;overflow:hidden;">
+          <div style="padding:18px 0;border-bottom:1px solid var(--line);">
+            <div style="display:flex;align-items:center;gap:14px;">
+              <div style="flex:1;">
+                <div style="font-size:14.5px;color:var(--t1);font-weight:500;">自动滚动到最新</div>
+                <div style="font-size:12px;color:var(--t5);margin-top:4px;line-height:1.5;">新消息抵达时，时间线自动滚到底；用户上滑后暂停。</div>
+              </div>
+              <div style="width:46px;height:28px;border-radius:999px;background:var(--accent);position:relative;flex:none;">
+                <div style="position:absolute;top:3px;left:22px;width:22px;height:22px;border-radius:50%;background:#fff;"></div>
+              </div>
+            </div>
+          </div>
+          <div style="padding:18px 0;border-bottom:1px solid var(--line);">
+            <div style="display:flex;align-items:center;gap:14px;">
+              <div style="flex:1;">
+                <div style="font-size:14.5px;color:var(--t1);font-weight:500;">实时活跃窗口</div>
+                <div style="font-size:12px;color:var(--t5);margin-top:4px;line-height:1.5;">文件 mtime 距今 N 秒内视为"实时"。</div>
+              </div>
+              <div style="width:84px;text-align:right;font-family:ui-monospace;font-size:14px;color:var(--accent);background:rgba(154,160,232,.1);border-radius:10px;padding:6px 10px;flex:none;">60s</div>
+            </div>
+          </div>
+          <div style="padding:18px 0;border-bottom:1px solid var(--line);">
+            <div style="font-size:14.5px;color:var(--t1);font-weight:500;">扫描间隔</div>
+            <div style="font-size:12px;color:var(--t5);margin-top:4px;line-height:1.5;">越短越实时，越长越省 IO。</div>
+            <div style="margin-top:10px;height:4px;border-radius:2px;background:rgba(255,255,255,.08);position:relative;">
+              <div style="position:absolute;left:0;top:0;bottom:0;width:30%;background:var(--accent);border-radius:2px;"></div>
+              <div style="position:absolute;left:30%;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 4px 10px rgba(0,0,0,.3);"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--t5);margin-top:8px;font-family:ui-monospace;">
+              <span>500ms</span><span style="color:var(--accent);">1500ms</span><span>5000ms</span>
+            </div>
+          </div>
+        </div>
+        <!-- 底部按钮 -->
+        <div style="flex:none;padding:12px 16px calc(12px + env(safe-area-inset-bottom,18px));display:flex;gap:10px;border-top:1px solid var(--line);">
+          <div style="flex:1;padding:14px;text-align:center;border-radius:14px;background:rgba(255,255,255,.05);color:var(--t2);font-size:15px;font-weight:500;">完成</div>
+          <div style="flex:1;padding:14px;text-align:center;border-radius:14px;background:var(--accent);color:#0f0f10;font-size:15px;font-weight:600;">保存</div>
+        </div>
+      </div>
+    </div></div>
+    <div class="label">⑤ 设置 · 全屏 sheet</div>
+    <div class="desc">桌面 176px 左导航 → 移动改顶部横向 tab。开关/滑块/数值卡片放大到 ≥44px 触达。底部按钮自带 safe-area 内边距。</div>
+  </div>
+
+</div>
+
+<div class="note" style="margin:0 36px 60px;max-width:980px;">
+  <b>断点策略：</b>所有移动样式收敛在 <code>@media (max-width: 767px)</code>（或 Tailwind 默认前缀，不带 <code>md:</code> 即移动）。
+  桌面 ≥768px 路径完全走原 CSS，无回归风险。<br>
+  <b>"看到效果"接下来的工作：</b>如果这些图你满意，下一步把改动落到 <code>index.html</code>（一次性结构 + CSS 改动；JS 主要新增汉堡、抽屉状态、长按手势、底部 sheet 与 history.pushState 集成）。
+</div>
+
+</body>
+</html>

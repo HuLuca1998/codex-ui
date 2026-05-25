@@ -14,5 +14,5 @@ go build -o "$BIN" .
 echo "  ◆ 编译完成，启动服务 ..."
 echo ""
 
-# 可选参数：传入自定义会话目录，例如  ./启动脚本.sh /path/to/sessions
+# 可选参数：传入自定义会话目录，例如  ./dev.sh /path/to/sessions
 exec "$BIN" "$@"

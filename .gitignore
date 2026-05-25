@@ -1,6 +1,10 @@
-# 构建产物（由 启动脚本.sh / 打包macOS-App.sh 重新生成）
+# 构建产物（由 dev.sh / build-mac.sh 重新生成）
 /codex-ui
 /Codex Viewer.app/
+/Codex-Viewer-*.zip
 
 # macOS
 .DS_Store
+
+# Claude Code 本地工作目录（个人会话与权限缓存，不入仓库）
+/.claude/

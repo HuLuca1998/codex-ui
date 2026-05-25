@@ -51,7 +51,10 @@ final class DragView: NSView {
     }
 }
 
-// /api/issues 返回的单条 issue（仅取菜单栏需要的字段）。
+// 菜单栏的三个标签页。
+enum MenuTab: Int { case issues = 0, prs = 1, sessions = 2 }
+
+// /api/menubar 返回的单条 issue。
 struct IssueLabel: Decodable {
     let name: String
     let color: String
@@ -63,12 +66,36 @@ struct IssueItem: Decodable {
     let url: String
     let labels: [IssueLabel]?
 }
-struct IssuesResponse: Decodable {
-    let issues: [IssueItem]?
-    let error: String?
-    let updated: Int64?
-    let menuMax: Int?
+// /api/menubar 返回的单条 pull request。
+struct PRItem: Decodable {
+    let repo: String
+    let number: Int
+    let title: String
+    let url: String
+    let labels: [IssueLabel]?
+    let author: String?
+    let isDraft: Bool?
+    let reason: String?   // author（我创建）| review（待我 review）
+}
+// /api/menubar 返回的单条活跃会话。
+struct SessionItem: Decodable {
+    let id: String
+    let source: String
+    let title: String
+    let project: String?
+    let mtime: Int64
+}
+// /api/menubar 的完整响应 —— 三个标签页所需的全部数据。
+struct MenubarResponse: Decodable {
     let showInMenu: Bool?
+    let menuMax: Int?
+    let issues: [IssueItem]?
+    let issuesUpdated: Int64?
+    let issuesError: String?
+    let prs: [PRItem]?
+    let prsUpdated: Int64?
+    let prsError: String?
+    let sessions: [SessionItem]?
 }
 
 // /api/config 的子集 —— 仅菜单栏外壳关心的部分。
@@ -97,25 +124,22 @@ extension NSColor {
     }
 }
 
-// 菜单里的单条 issue 行：左侧标题（点击打开 GitHub 页面），
-// 右侧「详情」按钮（点击在 iTerm2 里跑 /issue info）。
-final class IssueRowView: NSView {
-    private let issue: IssueItem
-    private weak var owner: AppDelegate?
+// ellipsizeStr 把过长字符串截断并加省略号。
+func ellipsizeStr(_ s: String, _ n: Int) -> String {
+    s.count <= n ? s : String(s.prefix(n)) + "…"
+}
 
-    init(issue: IssueItem, width: CGFloat, owner: AppDelegate) {
-        self.issue = issue
+// 菜单行的公共基类：悬停高亮 + 状态点 + 指针进出重绘。
+class HoverRowView: NSView {
+    weak var owner: AppDelegate?
+
+    init(width: CGFloat, owner: AppDelegate) {
         self.owner = owner
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 26))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
 
-    // 「详情」按钮的矩形区域（右对齐）。
-    private var detailRect: NSRect {
-        NSRect(x: bounds.width - 14 - 48, y: (bounds.height - 17) / 2,
-               width: 48, height: 17)
-    }
-    private var isHot: Bool { enclosingMenuItem?.isHighlighted ?? false }
+    var isHot: Bool { enclosingMenuItem?.isHighlighted ?? false }
 
     // 菜单高亮随指针移动变化，进出时刷新重绘。
     override func updateTrackingAreas() {
@@ -127,20 +151,47 @@ final class IssueRowView: NSView {
     }
     override func mouseEntered(with event: NSEvent) { needsDisplay = true }
     override func mouseExited(with event: NSEvent) { needsDisplay = true }
+    override func mouseDown(with event: NSEvent) {}
 
+    // 绘制高亮背景；子类在 super.draw(_:) 之后绘制内容。
     override func draw(_ dirtyRect: NSRect) {
-        let hot = isHot
-        if hot {
+        if isHot {
             NSColor.selectedContentBackgroundColor.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1),
                          xRadius: 5, yRadius: 5).fill()
         }
-        // 状态点
-        (owner?.labelColor(issue.labels ?? []) ?? .gray).setFill()
+    }
+    // 在左侧画一个状态点。
+    func drawDot(_ color: NSColor) {
+        color.setFill()
         NSBezierPath(ovalIn: NSRect(x: 15, y: (bounds.height - 8) / 2,
                                     width: 8, height: 8)).fill()
-        // 标题
-        if let title = owner?.issueMenuTitle(issue, highlighted: hot) {
+    }
+}
+
+// 菜单里的单条 issue 行：左侧标题（点击打开 GitHub 页面），
+// 右侧「详情」按钮（点击在 iTerm2 里跑 /issue info）。
+final class IssueRowView: HoverRowView {
+    private let issue: IssueItem
+
+    init(issue: IssueItem, width: CGFloat, owner: AppDelegate) {
+        self.issue = issue
+        super.init(width: width, owner: owner)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
+
+    // 「详情」按钮的矩形区域（右对齐）。
+    private var detailRect: NSRect {
+        NSRect(x: bounds.width - 14 - 48, y: (bounds.height - 17) / 2,
+               width: 48, height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let hot = isHot
+        drawDot(owner?.labelColor(issue.labels ?? []) ?? .gray)
+        if let title = owner?.rowTitle(number: issue.number, repo: issue.repo,
+                                       text: issue.title, highlighted: hot) {
             title.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
                                   width: detailRect.minX - 32 - 10, height: 17))
         }
@@ -157,8 +208,6 @@ final class IssueRowView: NSView {
         label.draw(at: NSPoint(x: d.midX - sz.width / 2, y: d.midY - sz.height / 2))
     }
 
-    override func mouseDown(with event: NSEvent) {}
-
     override func mouseUp(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         let onDetail = detailRect.insetBy(dx: -6, dy: -4).contains(p)
@@ -171,6 +220,101 @@ final class IssueRowView: NSView {
     }
 }
 
+// 菜单里的单条 PR 行：左侧标题，右侧来源标签（作者 / 待审）。点击打开 GitHub 页面。
+final class PRRowView: HoverRowView {
+    private let pr: PRItem
+
+    init(pr: PRItem, width: CGFloat, owner: AppDelegate) {
+        self.pr = pr
+        super.init(width: width, owner: owner)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
+
+    private var tagText: String { pr.reason == "review" ? "待审" : "作者" }
+    private var tagColor: NSColor {
+        pr.reason == "review" ? (NSColor(hex: "E8A33D") ?? .systemOrange)
+                              : (NSColor(hex: "5B9DFF") ?? .systemBlue)
+    }
+    private var tagRect: NSRect {
+        NSRect(x: bounds.width - 14 - 40, y: (bounds.height - 17) / 2, width: 40, height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let hot = isHot
+        drawDot(owner?.labelColor(pr.labels ?? []) ?? .gray)
+        let text = pr.isDraft == true ? "[草稿] " + pr.title : pr.title
+        if let title = owner?.rowTitle(number: pr.number, repo: pr.repo,
+                                       text: text, highlighted: hot) {
+            title.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
+                                  width: tagRect.minX - 32 - 10, height: 17))
+        }
+        // 来源标签
+        let t = tagRect
+        (hot ? NSColor.white.withAlphaComponent(0.16)
+             : NSColor.white.withAlphaComponent(0.07)).setFill()
+        NSBezierPath(roundedRect: t, xRadius: 4, yRadius: 4).fill()
+        let label = NSAttributedString(string: tagText, attributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: hot ? NSColor.white : tagColor])
+        let sz = label.size()
+        label.draw(at: NSPoint(x: t.midX - sz.width / 2, y: t.midY - sz.height / 2))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        enclosingMenuItem?.menu?.cancelTracking()
+        let url = pr.url
+        DispatchQueue.main.async { [weak owner] in owner?.openIssueLink(url) }
+    }
+}
+
+// 菜单里的单条活跃会话行：来源圆点 + 标题 + 项目名。点击唤起主窗口并定位。
+final class SessionRowView: HoverRowView {
+    private let session: SessionItem
+
+    init(session: SessionItem, width: CGFloat, owner: AppDelegate) {
+        self.session = session
+        super.init(width: width, owner: owner)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let hot = isHot
+        // 来源圆点：codex 琥珀，claude 紫。
+        let dot = session.source == "claude" ? (NSColor(hex: "9B8AFB") ?? .systemPurple)
+                                             : (NSColor(hex: "E8A33D") ?? .systemOrange)
+        drawDot(dot)
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingTail
+        // 右侧次要信息：项目名
+        let proj = session.project ?? ""
+        let metaColor = hot ? NSColor.white.withAlphaComponent(0.62) : NSColor.tertiaryLabelColor
+        let meta = NSAttributedString(string: proj, attributes: [
+            .foregroundColor: metaColor, .paragraphStyle: para,
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)])
+        let metaW = proj.isEmpty ? 0 : min(meta.size().width, 130)
+        let metaX = bounds.width - 14 - metaW
+        if metaW > 0 {
+            meta.draw(in: NSRect(x: metaX, y: (bounds.height - 16) / 2, width: metaW, height: 16))
+        }
+        // 标题
+        let titleColor = hot ? NSColor.white : NSColor.labelColor
+        let raw = session.title.isEmpty ? "（无标题）" : session.title
+        let title = NSAttributedString(string: ellipsizeStr(raw, 44), attributes: [
+            .foregroundColor: titleColor, .paragraphStyle: para,
+            .font: NSFont.menuFont(ofSize: 13)])
+        title.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
+                              width: metaX - 32 - 10, height: 17))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        enclosingMenuItem?.menu?.cancelTracking()
+        let id = session.id
+        DispatchQueue.main.async { [weak owner] in owner?.openSessionInWindow(id) }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
                          NSMenuDelegate, NSWindowDelegate {
     var window: NSWindow!
@@ -178,6 +322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var statusItem: NSStatusItem!
     var port = 7800
     let bg = NSColor(red: 0.027, green: 0.027, blue: 0.031, alpha: 1)
+    var selectedTab: MenuTab = .issues   // 当前菜单标签页，跨次开合保留
+    var menuData: MenubarResponse?       // 上次拉取的菜单数据，切标签复用
 
     func applicationDidFinishLaunching(_ note: Notification) {
         startServer()
@@ -254,39 +400,134 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         statusItem.menu = menu
     }
 
-    // 菜单即将显示前重建：拉取最新 issue 列表（读后端缓存）。
+    // 菜单行的统一宽度。
+    let menuWidth: CGFloat = 470
+
+    // 菜单即将显示前：拉取最新数据（读后端缓存），再按当前标签页构建。
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
         // 顺带按配置同步「开机自启动」（异步，不拖慢菜单弹出）。
         DispatchQueue.global().async { [weak self] in
             let s = self?.fetchConfig()?.startup
             DispatchQueue.main.async { self?.applyStartupConfig(s) }
         }
-        let resp = fetchIssues()
-        if resp == nil {
+        menuData = fetchMenubar()
+        rebuildMenu(menu)
+    }
+
+    // 按 selectedTab 重建整个菜单 —— 切换标签页时也走这里（复用已拉取的 menuData）。
+    func rebuildMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let segItem = NSMenuItem()
+        segItem.view = makeTabBar(width: menuWidth)
+        menu.addItem(segItem)
+        menu.addItem(.separator())
+
+        if menuData == nil {
             addInfoItem(menu, "无法连接到服务")
-        } else if !(resp?.showInMenu ?? true) {
-            addInfoItem(menu, "issue 菜单显示已关闭 —— 可在设置开启")
         } else {
-            if let ms = resp?.updated {
-                addInfoItem(menu, relTime(ms))
-                menu.addItem(.separator())
-            }
-            let list = resp?.issues ?? []
-            if list.isEmpty {
-                let err = resp?.error ?? ""
-                addInfoItem(menu, err.isEmpty ? "暂无分配给你的 issue —— 点设置添加仓库"
-                                              : "issue 拉取失败 —— 点设置检查")
-            } else {
-                for it in list.prefix(resp?.menuMax ?? 20) {
-                    let item = NSMenuItem()
-                    item.view = IssueRowView(issue: it, width: 470, owner: self)
-                    menu.addItem(item)
-                }
+            switch selectedTab {
+            case .issues:   buildIssues(menu)
+            case .prs:      buildPRs(menu)
+            case .sessions: buildSessions(menu)
             }
         }
+        addFooter(menu)
+    }
+
+    // 顶部分段控件：三个标签页 + 各自数量徽标。
+    func makeTabBar(width: CGFloat) -> NSView {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 36))
+        let seg = NSSegmentedControl(labels: tabLabels(), trackingMode: .selectOne,
+                                     target: self, action: #selector(tabChanged(_:)))
+        seg.selectedSegment = selectedTab.rawValue
+        let segW = (width - 28) / 3
+        for i in 0..<3 { seg.setWidth(segW, forSegment: i) }
+        seg.frame = NSRect(x: 14, y: 4, width: width - 28, height: 28)
+        seg.autoresizingMask = [.width]
+        v.addSubview(seg)
+        return v
+    }
+
+    // 各标签页的文字 —— 有数据时带计数。
+    func tabLabels() -> [String] {
+        let ic = menuData?.issues?.count ?? 0
+        let pc = menuData?.prs?.count ?? 0
+        let sc = menuData?.sessions?.count ?? 0
+        return [ic > 0 ? "Issue \(ic)" : "Issue",
+                pc > 0 ? "PR \(pc)" : "PR",
+                sc > 0 ? "会话 \(sc)" : "会话"]
+    }
+
+    @objc func tabChanged(_ sender: NSSegmentedControl) {
+        selectedTab = MenuTab(rawValue: sender.selectedSegment) ?? .issues
+        if let menu = statusItem.menu { rebuildMenu(menu) }
+    }
+
+    // issue 标签页内容。
+    func buildIssues(_ menu: NSMenu) {
+        guard let d = menuData else { return }
+        if !(d.showInMenu ?? true) {
+            addInfoItem(menu, "issue 菜单显示已关闭 —— 可在设置开启")
+            return
+        }
+        if let ms = d.issuesUpdated, ms > 0 {
+            addInfoItem(menu, relTime(ms))
+            menu.addItem(.separator())
+        }
+        let list = d.issues ?? []
+        if list.isEmpty {
+            let err = d.issuesError ?? ""
+            addInfoItem(menu, err.isEmpty ? "暂无分配给你的 issue —— 点设置关注仓库"
+                                          : "issue 拉取失败 —— 点设置检查")
+            return
+        }
+        for it in list.prefix(d.menuMax ?? 20) {
+            let item = NSMenuItem()
+            item.view = IssueRowView(issue: it, width: menuWidth, owner: self)
+            menu.addItem(item)
+        }
+    }
+
+    // PR 标签页内容。
+    func buildPRs(_ menu: NSMenu) {
+        guard let d = menuData else { return }
+        if let ms = d.prsUpdated, ms > 0 {
+            addInfoItem(menu, relTime(ms))
+            menu.addItem(.separator())
+        }
+        let list = d.prs ?? []
+        if list.isEmpty {
+            let err = d.prsError ?? ""
+            addInfoItem(menu, err.isEmpty ? "暂无与你相关的 PR —— 点设置关注仓库"
+                                          : "PR 拉取失败 —— 点设置检查")
+            return
+        }
+        for it in list.prefix(d.menuMax ?? 20) {
+            let item = NSMenuItem()
+            item.view = PRRowView(pr: it, width: menuWidth, owner: self)
+            menu.addItem(item)
+        }
+    }
+
+    // 活跃会话标签页内容。
+    func buildSessions(_ menu: NSMenu) {
+        guard let d = menuData else { return }
+        let list = d.sessions ?? []
+        if list.isEmpty {
+            addInfoItem(menu, "最近 1 分钟内没有活跃会话")
+            return
+        }
+        for it in list.prefix(d.menuMax ?? 20) {
+            let item = NSMenuItem()
+            item.view = SessionRowView(session: it, width: menuWidth, owner: self)
+            menu.addItem(item)
+        }
+    }
+
+    // 菜单底部固定操作项。
+    func addFooter(_ menu: NSMenu) {
         menu.addItem(.separator())
-        let refresh = NSMenuItem(title: "刷新 Issue", action: #selector(refreshIssuesNow),
+        let refresh = NSMenuItem(title: "刷新", action: #selector(refreshMenuNow),
                                  keyEquivalent: "")
         refresh.target = self
         if let img = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil) {
@@ -352,10 +593,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                                    completionHandler: nil)
     }
 
-    // 「刷新 Issue」→ 强制后端重新拉取，完成后重新弹出菜单显示新数据。
-    @objc func refreshIssuesNow() {
+    // 「刷新」→ 强制后端重新拉取 issue 与 PR，完成后重新弹出菜单显示新数据。
+    @objc func refreshMenuNow() {
         DispatchQueue.global().async {
-            if let url = URL(string: "http://127.0.0.1:\(self.port)/api/issues?refresh=1") {
+            if let url = URL(string: "http://127.0.0.1:\(self.port)/api/menubar?refresh=1") {
                 var req = URLRequest(url: url)
                 req.timeoutInterval = 30
                 let sem = DispatchSemaphore(value: 0)
@@ -366,6 +607,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.statusItem.button?.performClick(nil) // 重新弹出菜单
             }
         }
+    }
+
+    // 唤起主窗口并定位到指定会话（供菜单栏「活跃会话」点击）。
+    func openSessionInWindow(_ id: String) {
+        showMainWindow()
+        let esc = id.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "'", with: "\\'")
+        webView.evaluateJavaScript("window.openSession && window.openSession('\(esc)')",
+                                   completionHandler: nil)
     }
 
     // 把毫秒时间戳格式化成「更新于 X 前」。
@@ -426,39 +676,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    // 同步拉取 /api/issues（读 Go 后端缓存，毫秒级）；返回 nil 表示请求失败。
-    func fetchIssues() -> IssuesResponse? {
-        guard let url = URL(string: "http://127.0.0.1:\(port)/api/issues") else { return nil }
+    // 同步拉取 /api/menubar（读 Go 后端缓存，毫秒级）；返回 nil 表示请求失败。
+    func fetchMenubar() -> MenubarResponse? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/menubar") else { return nil }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2
-        var result: IssuesResponse? = nil
+        var result: MenubarResponse? = nil
         let sem = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, _, _ in
             defer { sem.signal() }
             if let data = data {
-                result = try? JSONDecoder().decode(IssuesResponse.self, from: data)
+                result = try? JSONDecoder().decode(MenubarResponse.self, from: data)
             }
         }.resume()
         _ = sem.wait(timeout: .now() + 3)
         return result
     }
 
-    // 菜单行标题：#编号（暗）+ 仓库短名（更暗）+ issue 标题；高亮时改用亮色。
-    func issueMenuTitle(_ it: IssueItem, highlighted hot: Bool) -> NSAttributedString {
+    // 菜单行标题：#编号（暗）+ 仓库短名（更暗）+ 标题；高亮时改用亮色。
+    func rowTitle(number: Int, repo: String, text: String,
+                  highlighted hot: Bool) -> NSAttributedString {
         let para = NSMutableParagraphStyle()
         para.lineBreakMode = .byTruncatingTail
         let numColor   = hot ? NSColor.white.withAlphaComponent(0.92) : NSColor.secondaryLabelColor
         let repoColor  = hot ? NSColor.white.withAlphaComponent(0.62) : NSColor.tertiaryLabelColor
         let titleColor = hot ? NSColor.white : NSColor.labelColor
         let r = NSMutableAttributedString()
-        r.append(NSAttributedString(string: "#\(it.number)  ", attributes: [
+        r.append(NSAttributedString(string: "#\(number)  ", attributes: [
             .foregroundColor: numColor, .paragraphStyle: para,
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)]))
-        let short = it.repo.split(separator: "/").last.map(String.init) ?? it.repo
+        let short = repo.split(separator: "/").last.map(String.init) ?? repo
         r.append(NSAttributedString(string: short + "  ", attributes: [
             .foregroundColor: repoColor, .paragraphStyle: para,
             .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .medium)]))
-        r.append(NSAttributedString(string: ellipsize(it.title, 44), attributes: [
+        r.append(NSAttributedString(string: ellipsize(text, 44), attributes: [
             .foregroundColor: titleColor, .paragraphStyle: para,
             .font: NSFont.menuFont(ofSize: 13)]))
         return r

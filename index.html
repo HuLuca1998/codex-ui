@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Session Viewer — Codex & Claude</title>
 <script src="/tailwind.js"></script>
 <script>
@@ -30,6 +32,32 @@ tailwind.config={theme:{extend:{
                     flex items-center gap-1.5 whitespace-nowrap overflow-hidden; }
   .item .mtime{ @apply flex-none whitespace-nowrap; }
   .item .sid{ @apply font-mono text-[#4a4a52] ml-auto flex-none max-w-[116px] truncate; }
+  .item .pin{ @apply text-[10px] text-sand flex-none; }
+  /* 折叠箭头：父项右上角，独立 hit-area，与点击进入会话区分 */
+  .item .chev{ @apply flex-none w-[18px] h-[18px] grid place-items-center rounded-[6px]
+                text-[10px] text-[#62626b] hover:bg-white/[0.07] hover:text-[#bdbdc4]
+                transition cursor-pointer select-none; }
+  .item .chev .ic{ @apply transition-transform duration-150; }
+  .item.exp .chev .ic{ transform: rotate(90deg); }
+  /* 子代理计数徽章：紧靠 chev，单击切折叠 */
+  .item .subcnt{ @apply flex-none text-[10px] tracking-wide text-[#74747e]
+                  px-1.5 py-[1px] rounded-[5px] bg-white/[0.04]
+                  hover:bg-white/[0.08] cursor-pointer select-none; }
+  /* 子代理行：缩进 + 左侧 spine + 头部横向连接线 */
+  .item.sub{ @apply ml-5 pl-3.5 py-1.5 gap-1 rounded-[12px]; position: relative; }
+  .item.sub::before{ content:""; position:absolute; left:0; top:-6px; bottom:6px;
+                     width:1px; background:rgba(255,255,255,0.07); }
+  .item.sub.last::before{ bottom: calc(100% - 16px); }
+  .item.sub::after{ content:""; position:absolute; left:0; top:16px; width:10px;
+                    height:1px; background:rgba(255,255,255,0.07); }
+  .item.sub .ttl{ @apply text-[12.5px] text-[#a8a8b0]; }
+  .item.sub .prev{ @apply text-[11.5px]; }
+
+  /* 右键菜单 */
+  .ctxmenu{ @apply fixed z-[60] min-w-[150px] py-1 rounded-[10px] bg-[#1c1c1e]
+            ring-1 ring-white/[0.09] shadow-[0_18px_44px_-10px_rgba(0,0,0,.75)]; }
+  .ctxmenu .mi{ @apply px-3.5 py-[7px] text-[12.5px] text-[#d4d4da] cursor-pointer
+                select-none flex items-center gap-2 hover:bg-white/[0.07]; }
 
   .dot{ @apply w-[6px] h-[6px] rounded-full flex-none; }
   .dot.live{ @apply bg-sage; animation:breathe 2.4s ease-in-out infinite; }
@@ -129,6 +157,33 @@ tailwind.config={theme:{extend:{
   .sys-body{ @apply px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-[#8a8a93]
               whitespace-pre-wrap break-words max-h-[320px] overflow-auto; }
 
+  /* AskUserQuestion 询问气泡 */
+  .ask{ @apply mt-1 space-y-2.5; }
+  .ask-q{ @apply bg-white/[0.025] ring-1 ring-white/[0.045] rounded-[14px] px-3.5 py-3; }
+  .ask-h{ @apply inline-block text-[10px] uppercase tracking-wide font-semibold
+           text-accent bg-accent/[0.13] rounded-[5px] px-2 py-[2px] mb-2; }
+  .ask-t{ @apply text-[13.5px] leading-relaxed text-[#dcdce0] mb-2.5; }
+  .ask-opts{ @apply grid gap-1.5; }
+  .ask-op{ @apply text-left bg-white/[0.025] ring-1 ring-white/[0.06] rounded-[10px]
+           px-3 py-2 cursor-pointer transition-colors hover:ring-accent/40
+           hover:bg-white/[0.04]
+           disabled:cursor-default disabled:hover:ring-white/[0.06]
+           disabled:hover:bg-white/[0.025]; }
+  .ask-op.sel{ @apply ring-accent bg-accent/[0.13]; }
+  .ask-op-l{ @apply text-[13px] font-medium text-[#e0e0e6]; }
+  .ask-op-d{ @apply text-[11.5px] text-[#7c7c86] mt-0.5 leading-snug; }
+  .ask-other{ @apply w-full bg-black/30 ring-1 ring-white/[0.05] rounded-[10px]
+              px-3 py-2 text-[12.5px] text-[#dcdce0] resize-none focus:outline-none
+              focus:ring-accent/40 placeholder:text-[#54545d]; }
+  .ask-sub{ @apply text-[12px] font-medium px-3.5 py-2 rounded-[10px] self-start
+            bg-accent/[0.18] text-accent ring-1 ring-accent/30 transition-colors
+            hover:bg-accent/[0.28] disabled:opacity-40 disabled:cursor-default
+            disabled:hover:bg-accent/[0.18]; }
+  .ask.done .ask-op{ @apply opacity-60; }
+  .ask.done .ask-op.sel{ @apply opacity-100 ring-sage bg-sage/[0.16]; }
+  .ask-hint{ @apply text-[12px] leading-relaxed text-sand bg-sand/[0.10]
+             ring-1 ring-sand/30 rounded-[10px] px-3 py-2; }
+
   .raw-btn{ @apply text-[10px] font-mono text-[#54545d] px-2 py-[2px] rounded-[5px]
              ring-1 ring-white/[0.05] flex-none transition-colors hover:text-accent; }
   .raw{ @apply hidden mt-2 bg-black/50 rounded-[10px] px-3 py-2.5 font-mono text-[11px]
@@ -177,6 +232,31 @@ tailwind.config={theme:{extend:{
   .projsel{ @apply w-full text-[12px] text-[#bdbdc4] bg-white/[0.04] rounded-[11px]
              px-3 py-[7px] outline-none cursor-pointer ring-1 ring-white/[0.04]
              hover:ring-white/[0.09] transition; }
+
+  /* 侧栏视图切换 + 用量报表 */
+  .vtab{ @apply flex-1 text-center text-[12px] py-[6px] rounded-[10px] font-medium
+          text-[#74747e] cursor-pointer transition-all duration-150; }
+  .vtab.on{ @apply text-[#f0f0f3] bg-white/[0.07]; }
+  .vtab:hover:not(.on){ @apply bg-white/[0.035]; }
+  .gtab{ @apply text-[11px] px-2.5 py-[3px] rounded-[7px] text-[#74747e]
+          cursor-pointer transition-all duration-150; }
+  .gtab.on{ @apply text-[#f0f0f3] bg-white/[0.07]; }
+  .gtab:hover:not(.on){ @apply bg-white/[0.035]; }
+  .rsec{ @apply text-[10px] font-semibold tracking-[.1em] uppercase text-[#54545d] mb-2; }
+  .rcard{ @apply flex flex-col gap-0.5 px-3 py-2.5 rounded-[12px]
+           bg-white/[0.025] ring-1 ring-white/[0.05]; }
+  .rcard .rk{ @apply text-[10px] text-[#62626b]; }
+  .rcard .rv{ @apply text-[15px] font-semibold text-[#e6e6e8] tabular-nums; }
+  .rbar{ @apply flex-1 min-w-0 max-w-[44px] min-h-[2px] rounded-t-[2px] bg-accent/60
+          hover:bg-accent transition-colors cursor-default; }
+  .rbar.last{ @apply bg-accent; }
+  .pcard{ @apply flex flex-col gap-0.5 px-3 py-2.5 rounded-[12px] cursor-pointer
+           bg-white/[0.025] ring-1 ring-white/[0.05] transition hover:bg-white/[0.045]; }
+  .pcard.on{ @apply bg-accent/[0.10] ring-accent/40; }
+  .rbtn{ @apply text-[10.5px] px-2 py-[3px] rounded-[7px] text-accent flex-none
+          bg-accent/[0.12] hover:bg-accent/20 transition
+          disabled:opacity-50 disabled:cursor-default; }
+  .listdiv{ @apply mx-4 my-1.5 h-px bg-white/[0.05] flex-none; }
 }
 /* 原生 CSS：滚动条 / 关键帧 / markdown */
 ::-webkit-scrollbar{width:8px;height:8px}
@@ -209,6 +289,113 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
 .md pre.code code{background:none;padding:0;color:#c4c8d6;font-size:12px;line-height:1.6;
   font-family:ui-monospace,Menlo,monospace}
 .think-body .md{color:#9a9aa3;font-size:12.5px}
+
+/* ───────────────────── 移动端适配（<768px） ─────────────────────
+   原则：所有规则收敛在此 media query 内，桌面路径完全不动。
+   断点 767px = Tailwind 默认 md 之下。 */
+.only-mobile{display:none}
+@media (max-width:767px){
+  /* 全局：去边距/圆角；用 100dvh 让键盘弹起后 composer 不被顶飞 */
+  /* overflow-x + touch-action 双保险：禁掉左右 rubber-band 与水平滚动 */
+  html,body{overflow-x:hidden!important;max-width:100vw!important;
+            overscroll-behavior-x:none}
+  body{padding:0!important;height:100dvh;touch-action:pan-y}
+  #app{border-radius:0!important;box-shadow:none!important;ring-width:0!important;
+       max-width:100vw!important;overflow-x:hidden!important}
+  #app > main,#scroll,#timeline{max-width:100vw!important;overflow-x:hidden}
+  /* 隐藏 macOS 专属元素：拖拽条占位 + 红绿灯让位空 div */
+  .tbstrip,.hide-mobile{display:none!important}
+  .only-mobile{display:flex}
+  /* 侧栏改成抽屉：固定在左侧，默认 -translate-x 隐藏 */
+  #app > aside{
+    position:fixed;left:0;top:0;bottom:0;z-index:60;
+    width:min(86vw,332px);
+    transform:translateX(-100%);
+    transition:transform .25s cubic-bezier(.32,.72,0,1);
+    box-shadow:6px 0 30px rgba(0,0,0,.5);
+  }
+  body.drawer-open #app > aside{transform:translateX(0)}
+  /* 抽屉遮罩 */
+  #drawerMask{
+    position:fixed;inset:0;z-index:55;background:rgba(0,0,0,.55);
+    backdrop-filter:blur(2px);
+    opacity:0;pointer-events:none;transition:opacity .25s;
+  }
+  body.drawer-open #drawerMask{opacity:1;pointer-events:auto}
+  /* 主区永远全宽；隐藏顶栏左侧 116px 占位 */
+  #app > main > header > .hdr-spacer{display:none!important}
+  /* barStatus 在移动端取自动宽度，紧贴右侧 */
+  #barStatus{width:auto!important}
+  /* composer 移动端：全宽贴底 + safe-area；去掉 780px / 56px 边距 */
+  #composer{
+    left:0!important;right:0!important;bottom:0!important;
+    transform:none!important;
+    width:100%!important;max-width:100%!important;
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom,8px)) 8px;
+  }
+  #composer > div{border-radius:16px}
+  /* 隐藏 macOS 专属按钮（在 iTerm2 调起会话） */
+  #resumeBtn{display:none!important}
+  /* 设置面板：全屏 sheet + 顶部水平 tab 替代左侧 176px 导航 */
+  #setPanel{
+    width:100vw!important;height:100dvh!important;height:100vh!important;
+    max-width:100vw!important;max-height:100dvh!important;
+    border-radius:0!important;
+    padding-top:env(safe-area-inset-top,0);
+  }
+  #setPanel > div:nth-child(2){flex-direction:column}
+  #setNav{
+    width:100%!important;border-right:0!important;
+    border-bottom:1px solid rgba(255,255,255,.05);
+    flex-direction:row!important;overflow-x:auto!important;
+    padding:8px 10px!important;gap:4px!important;flex:none!important;
+  }
+  #setNav .snav{white-space:nowrap;padding:6px 14px;font-size:13px}
+  /* 模态对话框：全屏 sheet 化 */
+  #runModal > div,#shareModal > div{
+    width:100vw!important;max-width:100vw!important;
+    height:100dvh!important;max-height:100dvh!important;
+    border-radius:0!important;
+    padding-top:env(safe-area-inset-top,0);
+  }
+  #runModal,#shareModal{padding:0!important}
+  /* 头部 / 输入框统一调大字号（防 iOS Safari 聚焦自动缩放：≥16px 触发临界） */
+  input,textarea,select{font-size:16px!important}
+  #q,#q2{font-size:15px!important} /* 这俩主输入框，16 会太大；用 15 配合 user-scalable 限制 */
+  /* 列表项放大：触达 ≥44px，字号 13→15 */
+  #list .item{padding:14px 14px!important;border-radius:14px!important;margin:0 8px!important}
+  #list .item .ttl{font-size:15px!important;line-height:1.35!important}
+  #list .item .prev{font-size:13.5px!important}
+  #list .item .metaline{font-size:12px!important;gap:8px!important}
+  #list .item .chev{width:32px!important;height:32px!important;font-size:12px!important}
+  #list .item .subcnt{font-size:12px!important;padding:3px 8px!important}
+  #list .item.sub{margin-left:18px!important;padding:9px 12px!important}
+  #list .item.sub .ttl{font-size:14px!important}
+  /* 顶栏：放大汉堡按钮触达 */
+  #menuBtn{width:42px;height:42px;display:grid;place-items:center;font-size:18px;
+           color:#bdbdc4;border-radius:11px;background:rgba(255,255,255,.04)}
+  #menuBtn:active{background:rgba(255,255,255,.08)}
+  /* 顶栏字体放大 */
+  #barTitle{font-size:14.5px!important}
+  /* 时间线左右内边距收紧 */
+  #timeline{padding-left:14px!important;padding-right:14px!important;padding-top:18px!important}
+  /* 底部 sheet 形式的 ctxMenu —— 长按触发 */
+  .ctxmenu.sheet{
+    position:fixed!important;left:0!important;right:0!important;top:auto!important;
+    bottom:0!important;width:100%!important;min-width:0!important;
+    border-radius:24px 24px 0 0!important;
+    padding:8px 0 calc(20px + env(safe-area-inset-bottom,8px))!important;
+    animation:sheetRise .22s cubic-bezier(.32,.72,0,1);
+  }
+  .ctxmenu.sheet::before{
+    content:"";display:block;width:38px;height:5px;border-radius:3px;
+    background:rgba(255,255,255,.18);margin:6px auto 14px;
+  }
+  .ctxmenu.sheet .mi{padding:14px 18px!important;font-size:15.5px!important;
+                      border-radius:0!important}
+  .ctxmenu.sheet .mi:active{background:rgba(255,255,255,.07)}
+}
+@keyframes sheetRise{from{transform:translateY(100%)}to{transform:translateY(0)}}
 </style>
 </head>
 <body class="h-screen w-screen overflow-hidden bg-[#070708] p-[10px]">
@@ -228,39 +415,55 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
         <div id="rootPath" class="text-[10.5px] text-[#54545d] truncate">扫描中…</div>
       </div>
     </div>
-    <div class="px-3.5 pb-1 flex gap-1">
-      <button class="dpill on" data-src="all">全部</button>
-      <button class="dpill" data-src="codex">Codex</button>
-      <button class="dpill" data-src="claude">Claude</button>
+    <!-- 视图切换：会话列表 / 用量报表 -->
+    <div class="px-3.5 pb-2 flex gap-1">
+      <button id="tabList" class="vtab on">会话</button>
+      <button id="tabReport" class="vtab">报表</button>
     </div>
-    <div class="px-3.5 pb-1.5">
-      <div class="flex items-center gap-2 px-3 py-2 rounded-[13px] bg-white/[0.035]
-                  ring-1 ring-white/[0.04] focus-within:ring-white/[0.1] transition">
-        <span class="text-[#54545d] text-[13px]">⌕</span>
-        <input id="q" placeholder="搜索会话"
-          class="flex-1 bg-transparent outline-none text-[12.5px] text-[#d4d4da]
-                 placeholder:text-[#54545d] min-w-0">
+
+    <!-- 会话列表视图 -->
+    <div id="listView" class="flex flex-col flex-1 min-h-0">
+      <div class="px-3.5 pb-1 flex gap-1">
+        <button class="dpill on" data-src="all">全部</button>
+        <button class="dpill" data-src="codex">Codex</button>
+        <button class="dpill" data-src="claude">Claude</button>
       </div>
+      <div class="px-3.5 pb-1.5">
+        <div class="flex items-center gap-2 px-3 py-2 rounded-[13px] bg-white/[0.035]
+                    ring-1 ring-white/[0.04] focus-within:ring-white/[0.1] transition">
+          <span class="text-[#54545d] text-[13px]">⌕</span>
+          <input id="q" placeholder="搜索 标题 / 路径 / session id"
+            class="flex-1 bg-transparent outline-none text-[12.5px] text-[#d4d4da]
+                   placeholder:text-[#54545d] min-w-0">
+        </div>
+      </div>
+      <!-- Claude 项目下拉过滤（仅在来源=Claude 时显示） -->
+      <div id="projwrap" class="px-3.5 pb-1.5" style="display:none">
+        <select id="projSel" class="projsel"></select>
+      </div>
+      <div class="px-3.5 pb-1 flex gap-1">
+        <button class="dpill" data-range="all">全部</button>
+        <button class="dpill on" data-range="today">今天</button>
+        <button class="dpill" data-range="week">本周</button>
+        <button class="dpill" data-range="month">本月</button>
+      </div>
+      <div class="px-5 pt-3 pb-1.5 flex items-center">
+        <span class="text-[10.5px] font-semibold tracking-[.12em] text-[#54545d] uppercase">会话</span>
+        <span id="sCount" class="ml-auto text-[10.5px] text-[#54545d] tabular-nums">0</span>
+      </div>
+      <div id="list" class="flex-1 min-h-0 overflow-y-auto py-1"></div>
     </div>
-    <!-- Claude 项目下拉过滤（仅在来源=Claude 时显示） -->
-    <div id="projwrap" class="px-3.5 pb-1.5" style="display:none">
-      <select id="projSel" class="projsel"></select>
-    </div>
-    <div class="px-3.5 pb-1 flex gap-1">
-      <button class="dpill" data-range="all">全部</button>
-      <button class="dpill on" data-range="today">今天</button>
-      <button class="dpill" data-range="week">本周</button>
-      <button class="dpill" data-range="month">本月</button>
-    </div>
-    <div class="px-5 pt-3 pb-1.5 flex items-center">
-      <span class="text-[10.5px] font-semibold tracking-[.12em] text-[#54545d] uppercase">会话</span>
-      <span id="sCount" class="ml-auto text-[10.5px] text-[#54545d] tabular-nums">0</span>
-    </div>
-    <div id="list" class="flex-1 min-h-0 overflow-y-auto py-1"></div>
+
     <div class="flex-none px-5 py-3.5 flex items-center gap-2 text-[10.5px] text-[#54545d]
                 border-t border-white/[0.04]">
       <span class="dot live"></span> 实时监听中
-      <button id="openSet" class="ml-auto w-[22px] h-[22px] rounded-[7px] text-[13px]
+      <button id="newTaskBtn" class="ml-auto flex items-center gap-1 px-2 h-[22px]
+        rounded-[7px] text-[11px] text-accent bg-accent/[0.12] hover:bg-accent/[0.22]
+        transition" title="新任务：选目录后台跑 Claude / Codex">+ 新任务</button>
+      <button id="shareBtn" class="w-[22px] h-[22px] rounded-[7px] text-[12px]
+        text-[#54545d] hover:text-accent hover:bg-white/[0.05] transition
+        flex items-center justify-center" title="分享 LAN 链接（含 token）">⇪</button>
+      <button id="openSet" class="w-[22px] h-[22px] rounded-[7px] text-[13px]
         text-[#54545d] hover:text-accent hover:bg-white/[0.05] transition
         flex items-center justify-center" title="设置">⚙</button>
     </div>
@@ -272,11 +475,15 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     <!-- 顶栏（macOS 工具栏：轻量、display-only、整体可拖拽） -->
     <header class="drag-region h-[52px] flex-none flex items-center gap-4 px-5
                    border-b border-white/[0.04] bg-[#0f0f10]/85 backdrop-blur-xl">
-      <div class="flex-none w-[116px]"></div>
+      <!-- 桌面 116px 占位（红绿灯让位），移动端隐藏 -->
+      <div class="flex-none w-[116px] hdr-spacer"></div>
+      <!-- 移动端汉堡按钮：唤出抽屉 -->
+      <button id="menuBtn" class="only-mobile no-drag flex-none" title="会话列表">☰</button>
       <div class="flex-1 min-w-0 text-center px-4">
         <div id="barTitle" class="text-[13.5px] font-semibold text-[#ededf0] truncate">Codex Viewer</div>
         <div id="barSub" class="text-[11px] text-[#62626b] truncate mt-[1px]"></div>
       </div>
+      <!-- 桌面 w-[116px] 镜像左占位；移动端在 CSS 里覆盖为 auto 宽度 -->
       <div id="barStatus" class="flex-none w-[116px] flex justify-end"></div>
     </header>
 
@@ -291,6 +498,9 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
       </div>
     </div>
 
+    <!-- 用量报表（内容由 renderReport 动态填充） -->
+    <div id="reportMain" class="hidden flex-1 min-h-0 overflow-y-auto"></div>
+
     <!-- 跳到最新 -->
     <button id="jump" class="hidden absolute left-1/2 -translate-x-1/2 bottom-[132px]
             items-center gap-1.5 text-[11.5px] font-medium text-[#0f0f10]
@@ -300,7 +510,7 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     </button>
 
     <!-- 底部悬浮控制台：flex column = 输入行 + 工具栏 -->
-    <div class="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(780px,calc(100%-56px))]">
+    <div id="composer" class="absolute left-1/2 -translate-x-1/2 bottom-6 w-[min(780px,calc(100%-56px))]">
       <div class="flex flex-col rounded-[20px] bg-[#171718]/85 backdrop-blur-2xl
                   ring-1 ring-white/[0.07] shadow-[0_24px_60px_-16px_rgba(0,0,0,.8)]">
         <!-- 输入行：Codex 会话=消息编写器，Claude 会话=对话内查找 -->
@@ -335,6 +545,111 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
   </main>
 </div>
 
+<!-- 移动端抽屉遮罩：点击关抽屉 -->
+<div id="drawerMask" class="only-mobile"></div>
+
+<!-- 会话右键菜单 / 移动端长按底部 sheet（同一 DOM，按视口切换样式） -->
+<div id="ctxMenu" class="ctxmenu hidden"></div>
+
+<!-- ── 新任务启动器 modal ── -->
+<div id="runModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center
+     bg-black/60 backdrop-blur-sm p-6">
+  <div class="w-[min(720px,100%)] max-h-[88vh] flex flex-col rounded-[20px]
+              bg-[#171718] ring-1 ring-white/[0.08]
+              shadow-[0_30px_80px_-20px_rgba(0,0,0,.9)] overflow-hidden">
+    <div class="h-[52px] flex-none flex items-center px-5 border-b border-white/[0.05]">
+      <span class="text-[13.5px] font-semibold text-[#ededf0]">+ 新任务</span>
+      <span class="ml-3 text-[11px] text-[#62626b]">选目录、写 prompt，后台跑 CLI</span>
+      <button id="runClose" class="ml-auto w-[26px] h-[26px] rounded-[8px] text-[#74747e]
+              hover:bg-white/[0.08] hover:text-[#d4d4da]">✕</button>
+    </div>
+    <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-4">
+      <!-- agent 单选 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] text-[#74747e] w-[60px]">CLI</span>
+        <div id="runAgent" class="flex gap-1.5">
+          <button data-agent="claude" class="ragent on">Claude</button>
+          <button data-agent="codex"  class="ragent">Codex</button>
+        </div>
+      </div>
+      <!-- cwd 输入 + 最近 -->
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] text-[#74747e] w-[60px]">工作目录</span>
+          <input id="runCwd" class="setin font-mono text-[12px]"
+                 placeholder="/path/to/dir，或下方树形选择" />
+        </div>
+        <div id="runRecent" class="flex flex-wrap gap-1.5 pl-[68px]"></div>
+      </div>
+      <!-- 目录树 -->
+      <div class="rounded-[12px] ring-1 ring-white/[0.06] bg-black/20 flex flex-col">
+        <div id="runCrumbs" class="flex items-center gap-1 px-3 py-2
+             text-[11.5px] font-mono text-[#9a9aa3] border-b border-white/[0.05]
+             overflow-x-auto whitespace-nowrap"></div>
+        <div id="runDirList" class="max-h-[220px] overflow-y-auto py-1"></div>
+      </div>
+      <!-- prompt -->
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] text-[#74747e] w-[60px]">Prompt</span>
+          <span class="text-[10.5px] text-[#54545d]">Cmd/Ctrl+Enter 运行</span>
+        </div>
+        <textarea id="runPrompt" rows="6" class="setin font-mono text-[12.5px] resize-y"
+          placeholder="例：你可以启动多个 task 分别输出本机 cpu/内存/磁盘分析，表格展示"></textarea>
+      </div>
+    </div>
+    <div class="h-[58px] flex-none flex items-center justify-end gap-2 px-5
+                border-t border-white/[0.05]">
+      <span id="runStatus" class="text-[11.5px] text-[#74747e] mr-auto truncate"></span>
+      <button id="runCancel" class="px-4 h-[32px] rounded-[10px] text-[12px]
+              text-[#d4d4da] bg-white/[0.05] hover:bg-white/[0.09]">取消</button>
+      <button id="runGo" class="px-4 h-[32px] rounded-[10px] text-[12px] font-semibold
+              text-[#0f0f10] bg-accent hover:brightness-110">运行 ▸</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── LAN 分享 modal ── -->
+<div id="shareModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center
+     bg-black/60 backdrop-blur-sm p-6">
+  <div class="w-[min(560px,100%)] max-h-[80vh] flex flex-col rounded-[20px]
+              bg-[#171718] ring-1 ring-white/[0.08]
+              shadow-[0_30px_80px_-20px_rgba(0,0,0,.9)] overflow-hidden">
+    <div class="h-[52px] flex-none flex items-center px-5 border-b border-white/[0.05]">
+      <span id="shareTitle" class="text-[13.5px] font-semibold text-[#ededf0]">⇪ 分享链接</span>
+      <span id="shareSub" class="ml-3 text-[11px] text-[#62626b]">同一 Wi-Fi 打开即可使用</span>
+      <button id="shareClose" class="ml-auto w-[26px] h-[26px] rounded-[8px] text-[#74747e]
+              hover:bg-white/[0.08] hover:text-[#d4d4da]">✕</button>
+    </div>
+    <div class="flex-1 min-h-0 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+      <div id="shareList" class="flex flex-col gap-2"></div>
+      <div class="text-[11px] text-[#62626b] leading-relaxed pt-1">
+        链接已包含 token；任何在同网段拿到该 URL 的设备都能 bypassPermissions
+        启动本机的 Claude / Codex。请仅在可信网络分享。
+      </div>
+    </div>
+  </div>
+</div>
+
+<style type="text/tailwindcss">
+@layer components{
+  .ragent{ @apply px-3 h-[28px] rounded-[10px] text-[12px] font-medium
+            text-[#9a9aa3] bg-white/[0.04] hover:bg-white/[0.08] transition; }
+  .ragent.on{ @apply text-[#0f0f10] bg-accent hover:brightness-110; }
+  .rdir{ @apply flex items-center gap-2 px-3 h-[28px] text-[12px] text-[#d4d4da]
+          font-mono cursor-pointer hover:bg-white/[0.04]; }
+  .rdir .ic{ @apply text-[#7e7e88] flex-none w-[14px] text-center; }
+  .rcrumb{ @apply text-accent hover:underline cursor-pointer; }
+  .rrecent{ @apply px-2 h-[22px] rounded-[8px] text-[11px] font-mono
+            text-[#9a9aa3] bg-white/[0.04] hover:bg-white/[0.08] cursor-pointer transition; }
+  .shareRow{ @apply flex items-center gap-2 px-3 py-2 rounded-[12px]
+              bg-white/[0.04] ring-1 ring-white/[0.04]; }
+  .shareRow .url{ @apply flex-1 min-w-0 text-[12px] font-mono text-[#d4d4da] truncate; }
+  .shareRow .cpy{ @apply flex-none px-3 h-[26px] rounded-[8px] text-[11px]
+                   text-[#0f0f10] bg-accent hover:brightness-110 font-semibold; }
+}
+</style>
+
 <!-- ── 设置面板：侧边栏分组 ── -->
 <div id="settings" class="hidden fixed inset-[10px] z-50 rounded-[24px] bg-[#0f0f10]
      ring-1 ring-white/[0.06] flex flex-col overflow-hidden">
@@ -357,9 +672,37 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
 
 <script>
 "use strict";
+// Token bootstrap：?t=xxx → 写 cookie → 清掉 URL 参数。
+// 之后所有 fetch / EventSource 走同源 cookie，免改任何业务请求。
+(function(){
+  const u=new URL(location.href);
+  const t=u.searchParams.get("t");
+  if(t){
+    // SameSite=Lax + 一年过期；非 https 也用，本地 LAN 无 secure 需求
+    document.cookie="codex_token="+encodeURIComponent(t)+"; path=/; max-age=31536000; samesite=lax";
+    u.searchParams.delete("t");
+    history.replaceState(null,"",u.pathname+(u.search?u.search:"")+u.hash);
+  }
+})();
+// 全局 JS 错误浮窗 —— WKWebView 没有可见控制台时，错误会显示在右下角红条
+window.addEventListener("error",ev=>{
+  try{
+    let b=document.getElementById("__errbar");
+    if(!b){
+      b=document.createElement("div");b.id="__errbar";
+      b.style.cssText="position:fixed;right:8px;bottom:8px;max-width:60vw;z-index:9999;"+
+        "padding:8px 12px;background:#a83a3a;color:#fff;font:11px/1.4 monospace;"+
+        "border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);white-space:pre-wrap;cursor:pointer";
+      b.onclick=()=>b.remove();
+      document.body.appendChild(b);
+    }
+    b.textContent="JS 错误："+(ev.message||"")+" @ "+(ev.filename||"").split("/").pop()+":"+(ev.lineno||"");
+  }catch(_){}
+});
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const sessions=new Map();
+const pinned=new Set(); // 置顶会话 ID
 let currentId=null, ctx=null, autoFollow=true, pendingNew=0, composerMode=false;
 let curSummary=null, stat={events:0,tools:0,tokIn:0,tokOut:0,user:0,asst:0,ctxUsed:0,ctxWin:0};
 const filters={chat:true,think:false,tool:false,system:false}; // 默认只显示对话
@@ -389,6 +732,14 @@ function relTime(ms){
 }
 function clock(s){return s?new Date(s).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}):"";}
 function hhmm(s){return s?new Date(s).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"";}
+// 时长：毫秒 → 1h32m23s / 5m3s / 8s
+function dur(ms){
+  if(!ms||ms<0)return"";
+  let s=Math.round(ms/1000);
+  const h=Math.floor(s/3600);s%=3600;
+  const m=Math.floor(s/60);s%=60;
+  return(h?h+"h":"")+(h||m?m+"m":"")+s+"s";
+}
 function base(p){return p?p.split("/").filter(Boolean).pop():"";}
 function num(n){return(n||0).toLocaleString("en-US");}
 function shortSid(s){s=String(s||"");return s.length<=20?s:s.slice(0,8)+"****"+s.slice(-8);}
@@ -630,9 +981,13 @@ function funcCall(p,o){
   applyPair(p.call_id);
   return{cat:"tool",node:c};
 }
-function fillOutput(id,text,ok){
+function fillOutput(id,text,ok,extra){
   const t=ctx&&ctx.tools.get(id);
   if(!t)return false;
+  if(t.isAsk){
+    if(t.applyAnswers)t.applyAnswers(extra&&extra.answers,!!(extra&&extra.isError));
+    return true;
+  }
   const stat=t.card.querySelector(".stat");
   if(stat){stat.textContent=ok?"完成":"失败";stat.className="stat "+(ok?"ok":"err");}
   if(t.shell){t.out.style.display="block";t.out.textContent=text;}
@@ -694,9 +1049,14 @@ function imageEv(p,o){
 
 /* ── 时间线 ── */
 function fmtTok(n){
+  if(n>=1e9)return(n/1e9).toFixed(1)+"B";
   if(n>=1e6)return(n/1e6).toFixed(1)+"M";
   if(n>=1e3)return(n/1e3).toFixed(1)+"k";
   return String(n);
+}
+function fmtCost(n){
+  n=n||0;
+  return n>=100?"$"+Math.round(n).toLocaleString("en-US"):"$"+n.toFixed(2);
 }
 function tallyCodex(o){
   const p=o.payload||{},pt=p.type;
@@ -791,6 +1151,7 @@ function claudeImage(b,ts){
 }
 function claudeToolUse(b,o){
   const name=b.name||"工具",inp=b.input||{};
+  if(name==="AskUserQuestion")return claudeAskUser(b,o);
   const isBash=name==="Bash"&&inp.command;
   const isEdit=/^(Edit|MultiEdit|Write|NotebookEdit)$/.test(name);
   let body,sub,outTarget,shell=false;
@@ -839,7 +1200,8 @@ function claudeResultText(c){
 }
 function claudeToolResult(b,o){
   const text=claudeResultText(b.content),ok=!b.is_error;
-  if(fillOutput(b.tool_use_id,text,ok))return null;
+  const ans=(o&&o.toolUseResult&&o.toolUseResult.answers)||null;
+  if(fillOutput(b.tool_use_id,text,ok,{answers:ans,isError:!ok}))return null;
   if(pairs&&pairs.calls.has(b.tool_use_id))return null; // 调用在其它窗口
   return{cat:"tool",node:card({ic:"⮑",iccls:"tool",lbl:"工具结果",sub:firstLine(text),
     stat:ok?"完成":"失败",statcls:ok?"ok":"err",body:h("div",{class:"argblk",text}),obj:o})};
@@ -848,6 +1210,139 @@ function claudeSysSub(o){
   if(o.subtype==="stop_hook_summary")
     return (o.hookCount||0)+" 个 hook"+(o.preventedContinuation?" · 已阻止继续":"");
   return o.level||o.content||"";
+}
+
+/* AskUserQuestion：渲染成对话气泡里的可点击问答卡片 —— 选中后通过
+   /api/run (claude --resume <sid> -p) 把答案作为下一条 user message 回传 */
+function claudeAskUser(b,o){
+  const inp=b.input||{};
+  const questions=Array.isArray(inp.questions)?inp.questions:[];
+  const node=h("div",{class:"ev"});
+  const m=h("div",{class:"msg asst"});
+  m.append(h("div",{class:"av",text:"?"}));
+  const body=h("div",{class:"body"});
+  const {btn,pre}=rawBtn(o);
+  body.append(h("div",{class:"name"},"Claude · 询问你",
+    h("span",{class:"time",text:hhmm(o.timestamp)}),
+    h("span",{style:"flex:1"}),btn));
+  const ask=h("div",{class:"ask"});
+  const sel=new Map();          // qi -> string | Set<string>
+  const optsBoxes=[];           // qi -> options 容器，方便回填
+  let submitted=false, done=false;
+
+  questions.forEach((q,qi)=>{
+    const qBox=h("div",{class:"ask-q"});
+    if(q.header)qBox.append(h("div",{class:"ask-h",text:q.header}));
+    if(q.question)qBox.append(h("div",{class:"ask-t",text:q.question}));
+    const opts=h("div",{class:"ask-opts"});
+    (q.options||[]).forEach(op=>{
+      const label=op.label||"";
+      const opBtn=h("button",{class:"ask-op",type:"button"});
+      opBtn.append(h("div",{class:"ask-op-l",text:label}));
+      if(op.description)opBtn.append(h("div",{class:"ask-op-d",text:op.description}));
+      opBtn._label=label;
+      opBtn.addEventListener("click",e=>{
+        e.stopPropagation();
+        if(done||submitted)return;
+        if(q.multiSelect){
+          const s=sel.get(qi)||new Set();
+          if(s.has(label))s.delete(label); else s.add(label);
+          sel.set(qi,s);
+          opBtn.classList.toggle("sel",s.has(label));
+        }else{
+          sel.set(qi,label);
+          opts.querySelectorAll(".ask-op").forEach(x=>x.classList.remove("sel"));
+          opBtn.classList.add("sel");
+        }
+        updateSubmit();
+      });
+      opts.append(opBtn);
+    });
+    qBox.append(opts);
+    ask.append(qBox);
+    optsBoxes.push(opts);
+  });
+
+  const custom=h("textarea",{class:"ask-other",rows:"2",
+    placeholder:"或自定义回复（留空走上方选项）…"});
+  const submit=h("button",{class:"ask-sub",type:"button",text:"提交回答"});
+  submit.disabled=true;
+  ask.append(custom);ask.append(submit);
+
+  function updateSubmit(){
+    if(done||submitted){submit.disabled=true;return;}
+    if(custom.value.trim()){submit.disabled=false;return;}
+    const allAns=questions.every((q,qi)=>{
+      const v=sel.get(qi);
+      return q.multiSelect?(v&&v.size>0):(v!=null);
+    });
+    submit.disabled=!allAns;
+  }
+  custom.addEventListener("input",updateSubmit);
+
+  submit.addEventListener("click",async e=>{
+    e.stopPropagation();
+    if(submitted||done)return;
+    const s=curSummary||{};
+    if(s.source!=="claude"||!s.sid||!s.cwd){
+      submit.textContent="✗ 缺 sid/cwd，无法 resume";return;
+    }
+    submitted=true;submit.disabled=true;submit.textContent="发送中…";
+    const free=custom.value.trim();
+    let text;
+    if(free){text=free;}
+    else{
+      // 复刻 Claude 原生交互的 tool_result 文案，多选用 ", " 分隔
+      const parts=questions.map((q,qi)=>{
+        const v=sel.get(qi);
+        const a=q.multiSelect?[...(v||[])].join(", "):String(v==null?"":v);
+        return '"'+q.question+'"="'+a+'"';
+      });
+      text="Your questions have been answered: "+parts.join(", ")+
+        ". You can now continue with these answers in mind.";
+    }
+    try{
+      const d=await(await fetch("/api/run",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({agent:"claude",mode:"resume",
+          sid:s.sid,cwd:s.cwd,prompt:text})})).json();
+      if(d.ok){submit.textContent="✓ 已发送，等待回复…";}
+      else{submit.textContent="✗ "+(d.error||"发送失败");submitted=false;updateSubmit();}
+    }catch(err){submit.textContent="✗ 网络异常";submitted=false;updateSubmit();}
+  });
+
+  body.append(ask);body.append(pre);
+  m.append(body);node.append(m);
+
+  // 回填：tool_result 到达时（pre-scan 或后到）
+  //   ① 真实流式完成（有 answers）→ 回填已选 + 锁定交互
+  //   ② -p 模式中断（is_error，无 answers）→ 保留交互 + 顶部加提示，
+  //      让用户在 UI 选完后通过 claude --resume <sid> -p 继续对话
+  function applyAnswers(answers,isError){
+    if(answers&&typeof answers==="object"){
+      done=true;submitted=true;
+      custom.style.display="none";submit.style.display="none";
+      ask.classList.add("done");
+      questions.forEach((q,qi)=>{
+        const a=answers[q.question];
+        if(a==null)return;
+        // 兼容 ", " / " / " 两种分隔，原生用 ", "
+        const wanted=String(a).split(/, | \/ /);
+        optsBoxes[qi].querySelectorAll(".ask-op").forEach(x=>{
+          x.disabled=true;
+          if(wanted.includes(x._label))x.classList.add("sel");
+        });
+      });
+    }else if(isError&&!ask.querySelector(".ask-hint")){
+      const hint=h("div",{class:"ask-hint",
+        text:"⚠ -p 模式无法弹出 UI，对话已中断。请在此选择回答，提交后将以 claude --resume -p 继续对话"});
+      ask.insertBefore(hint,ask.firstChild);
+    }
+  }
+
+  ctx.tools.set(b.id,{card:node,out:null,isAsk:true,applyAnswers});
+  applyPair(b.id);
+  return{cat:"chat",node};
 }
 
 /* ── 时间线：窗口化渲染（仅渲染最新一段，向上滚动加载更早） ── */
@@ -867,7 +1362,9 @@ function buildPairs(events,claude){
       }else if(o.type==="user"&&Array.isArray(o.message&&o.message.content)){
         for(const b of o.message.content)
           if(b&&b.type==="tool_result"&&b.tool_use_id)
-            out.set(b.tool_use_id,{text:claudeResultText(b.content),ok:!b.is_error});
+            out.set(b.tool_use_id,{text:claudeResultText(b.content),ok:!b.is_error,
+              answers:(o.toolUseResult&&o.toolUseResult.answers)||null,
+              isError:!!b.is_error});
       }
     }else if(o.type==="response_item"){
       const p=o.payload||{};
@@ -881,7 +1378,7 @@ function buildPairs(events,claude){
 }
 // 工具卡片创建后，若预扫描已知其输出则立即填充
 function applyPair(id){
-  if(pairs&&pairs.out.has(id)){const r=pairs.out.get(id);fillOutput(id,r.text,r.ok);}
+  if(pairs&&pairs.out.has(id)){const r=pairs.out.get(id);fillOutput(id,r.text,r.ok,r);}
 }
 
 // 渲染单个事件，追加到 parent
@@ -901,17 +1398,32 @@ function appendOne(o,parent,claude){
     parent.append(node);
   }
 }
-// 向上加载更早的一段（保持视觉位置不跳动）
+// 时间线窗口按"用户实际能看到的条数"度量，而非收到的原始事件数。
+// 可见事件 = 未被分类筛选(hidden)、也未被搜索筛选(hideF)隐藏的事件。
+function countVisible(){
+  return $("#timeline").querySelectorAll(".ev:not(.hidden):not(.hideF)").length;
+}
+// 持续向前补渲染原始事件，直到 DOM 中可见事件数 ≥ need 或抵达会话开头。
+// 返回是否补渲染过（窗口是否向前扩展）。
+function ensureVisible(need){
+  const tl=$("#timeline");
+  let grew=false;
+  while(renderedFrom>0&&countVisible()<need){
+    const from=Math.max(0,renderedFrom-WIN);
+    const frag=document.createDocumentFragment();
+    for(let i=from;i<renderedFrom;i++)appendOne(allEvents[i],frag,winClaude);
+    tl.insertBefore(frag,tl.querySelector(".ev"));
+    renderedFrom=from;
+    grew=true;
+  }
+  return grew;
+}
+// 向上滚动：再补足 WIN 条可见事件（保持视觉位置不跳动）
 function loadOlder(){
   if(loadingOlder||renderedFrom<=0)return;
   loadingOlder=true;
-  const sc=$("#scroll"),tl=$("#timeline");
-  const prevH=sc.scrollHeight,prevTop=sc.scrollTop;
-  const from=Math.max(0,renderedFrom-WIN);
-  const frag=document.createDocumentFragment();
-  for(let i=from;i<renderedFrom;i++)appendOne(allEvents[i],frag,winClaude);
-  tl.insertBefore(frag,tl.querySelector(".ev"));
-  renderedFrom=from;
+  const sc=$("#scroll"),prevH=sc.scrollHeight,prevTop=sc.scrollTop;
+  ensureVisible(countVisible()+WIN);
   sc.scrollTop=prevTop+(sc.scrollHeight-prevH);
   loadingOlder=false;
 }
@@ -919,7 +1431,7 @@ function appendEvents(list){ // 仅实时增量，追加到末尾
   const tl=$("#timeline");
   for(const o of list){stat.events++;tallyOne(o,winClaude);appendOne(o,tl,winClaude);}
 }
-function renderSession(d){
+function renderSession(d,keepScroll){
   ctx={tools:new Map()};
   curSummary=d.summary;
   winClaude=(d.summary||{}).source==="claude";
@@ -927,7 +1439,7 @@ function renderSession(d){
   pairs=buildPairs(allEvents,winClaude);
   stat={events:d.total||0,tools:0,tokIn:0,tokOut:0,user:0,asst:0,ctxUsed:0,ctxWin:0};
   for(const o of allEvents)tallyOne(o,winClaude); // 全量统计（与窗口无关）
-  setComposer(!winClaude); // Codex 会话=编写器，Claude=查找
+  setComposer(true); // 两种来源都开编写器；sendMessage 按 source 分发
   const tl=$("#timeline");tl.innerHTML="";
   $("#empty").style.display="none";
   tl.style.display="block";
@@ -935,10 +1447,16 @@ function renderSession(d){
     "更早的事件未载入（会话过大，共 "+num(d.total)+" 条）"));
   renderedFrom=Math.max(0,allEvents.length-WIN); // 只渲染最新窗口
   for(let i=renderedFrom;i<allEvents.length;i++)appendOne(allEvents[i],tl,winClaude);
+  // 最新窗口若可见事件不足（整片是工具/思考等被默认筛选隐藏的事件），
+  // 向前补窗直到凑够一屏可见内容 —— 用户看到的是消息，不是原始事件数。
+  ensureVisible(WIN);
   drawHeader();
-  const sc=$("#scroll");sc.scrollTop=sc.scrollHeight;
+  const sc=$("#scroll");
+  // 切回看过的会话：恢复离开时的滚动位置；首次打开：落到最新一条
+  sc.scrollTop=(keepScroll&&scrollMem.has(currentId))?scrollMem.get(currentId):sc.scrollHeight;
 }
 function drawHeader(){
+  if(sidebarView==="report")return; // 报表视图下保留「用量报表」标题，不被会话信息覆盖
   const s=curSummary||{};
   $("#barTitle").textContent=s.title||"(无标题会话)";
   const parts=[s.model,s.cwd&&base(s.cwd),s.gitBranch&&("⎇ "+s.gitBranch),
@@ -950,31 +1468,37 @@ function drawHeader(){
     h("span",{class:"dot "+(s.active?"live":"idle")}),s.active?"实时":"已结束"));
   drawTokens();
 }
-// 工具栏中部 token 用量（上传/下载），随事件流实时更新
+// 工具栏中部用量统计：图标即标签，紧凑显示，随事件流实时更新
 function drawTokens(){
   const el=$("#tokDock");
-  const sep='<span style="color:#3a3a42;margin:0 10px">·</span>';
+  const sep='<span style="color:#3a3a42;margin:0 9px">·</span>';
+  // 图标作前缀（暗色），值用主色 —— 省掉"上传/下载/上下文"等冗余文字
+  const seg=(col,icon,val,tip)=>'<span style="color:'+col+'"'+
+    (tip?' title="'+tip+'"':'')+
+    '><span style="color:#5c5c66;margin-right:3px">'+icon+'</span>'+val+'</span>';
   const segs=[];
   if(stat.tokIn>0||stat.tokOut>0){
-    segs.push('<span style="color:#84cabb">↑ 上传 '+fmtTok(stat.tokIn)+'</span>');
-    segs.push('<span style="color:#9aa0e8">↓ 下载 '+fmtTok(stat.tokOut)+'</span>');
+    segs.push(seg('#84cabb','↑',fmtTok(stat.tokIn),'上传 token（含缓存命中）'));
+    segs.push(seg('#9aa0e8','↓',fmtTok(stat.tokOut),'下载 token'));
   }
   if(stat.ctxUsed>0&&stat.ctxWin>0){
     const pct=stat.ctxUsed/stat.ctxWin;
     const col=pct<0.5?'#84cabb':pct<0.8?'#d8b46a':'#e0879a';
-    segs.push('<span style="color:'+col+'" title="当前对话占用的上下文（最近一轮）">'+
-      '◰ 上下文 '+fmtTok(stat.ctxUsed)+' / '+fmtTok(stat.ctxWin)+
-      ' · '+Math.round(pct*100)+'%</span>');
+    segs.push(seg(col,'◰',fmtTok(stat.ctxUsed)+' / '+fmtTok(stat.ctxWin),
+      '窗口使用 · 最近一轮占用上下文 '+Math.round(pct*100)+'%'));
   }
+  const s=curSummary||{};
+  const d=s.startTime?dur((s.mtime||0)-Date.parse(s.startTime)):'';
+  if(d)segs.push(seg('#9a9aa3','⧖',d,'运行时间（首条→末条事件）'));
   el.innerHTML=segs.join(sep);
 }
-// 切换底部输入框：Codex 会话=消息编写器，其它=对话内查找
+// 切换底部输入框：会话视图=消息编写器；报表/无会话=对话内查找
 function setComposer(on){
   composerMode=on;
   const ta=$("#q2"),btn=$("#sendBtn"),icon=$("#q2icon");
   ta.value="";ta.style.height="auto";
   if(on){
-    ta.placeholder="给 Codex 发送消息，回车发送…";
+    ta.placeholder=composerPlaceholder();
     icon.textContent="›";
     btn.classList.remove("hidden");btn.classList.add("flex");
   }else{
@@ -983,17 +1507,37 @@ function setComposer(on){
     btn.classList.add("hidden");btn.classList.remove("flex");
   }
 }
-// 发送消息：后台运行 codex exec resume，结果经实时监控流回时间线
+function composerPlaceholder(){
+  const src=(curSummary||{}).source;
+  if(src==="claude")return"给 Claude 发送消息，回车后台执行…";
+  if(src==="codex") return"给 Codex 发送消息，回车后台执行…";
+  return"输入消息，回车后台执行…";
+}
+// 发送消息：
+//   Codex  → /api/send（原 codex exec resume 模板，保留兼容）
+//   Claude → /api/run 走 claude --resume <sid> -p <msg>，需要 cwd（取会话 cwd）
 async function sendMessage(){
   if(!composerMode||!currentId)return;
   const ta=$("#q2"),msg=ta.value.trim();
   if(!msg)return;
+  const s=curSummary||{};
+  if(s.source==="claude"&&!s.cwd){
+    ta.placeholder="✗ 该 Claude 会话无 cwd，无法 resume";return;
+  }
   ta.value="";ta.style.height="auto";
-  const def="给 Codex 发送消息，回车发送…";
+  const def=composerPlaceholder();
   try{
-    const d=await(await fetch("/api/send?id="+encodeURIComponent(currentId),
-      {method:"POST",body:msg})).json();
-    if(d.ok)ta.placeholder="✓ 已发送，Codex 正在后台处理…";
+    let d;
+    if(s.source==="claude"){
+      d=await(await fetch("/api/run",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({agent:"claude",mode:"resume",
+          sid:s.sid,cwd:s.cwd,prompt:msg})})).json();
+    }else{
+      d=await(await fetch("/api/send?id="+encodeURIComponent(currentId),
+        {method:"POST",body:msg})).json();
+    }
+    if(d.ok)ta.placeholder="✓ 已发送，后台执行中…";
     else{ta.placeholder="✗ "+(d.error||"发送失败");ta.value=msg;}
   }catch(e){ta.placeholder="✗ 发送失败";ta.value=msg;}
   setTimeout(()=>{if(composerMode)ta.placeholder=def;},3500);
@@ -1045,46 +1589,177 @@ function inRange(mtime){
   }
   return true;
 }
+// 会话创建时间（首个事件的时间戳），缺失时回退到 mtime。
+// 创建时间恒定不变，用作稳定排序键，避免列表随实时活动重新洗牌。
+function ctime(s){
+  const t=s.startTime?Date.parse(s.startTime):0;
+  return t||s.mtime||0;
+}
 // 构建单个会话列表项
-function buildItem(s){
-  const it=h("div",{class:"item"+(s.id===currentId?" sel":""),onclick:()=>openSession(s.id)});
-  it.append(h("div",{class:"flex items-center gap-2"},
-    h("span",{class:"dot "+(s.active?"live":"idle")}),
-    h("span",{class:"ttl",text:s.title||"(无标题会话)"})));
+// opts: { sub:true → 子代理行；childCount:N → 父项显示折叠控件；expanded:true → 展开态；last:true → 最后一个子项裁断 spine }
+function buildItem(s,opts){
+  opts=opts||{};
+  const cls=["item"];
+  if(s.id===currentId)cls.push("sel");
+  if(opts.sub)cls.push("sub");
+  if(opts.last)cls.push("last");
+  if(opts.expanded)cls.push("exp");
+  const it=h("div",{class:cls.join(" "),"data-id":s.id,
+    "data-sid":s.sid||"",
+    onclick:()=>openSession(s.id),
+    onmouseenter:()=>prefetchOnHover(s.id),
+    onmouseleave:()=>clearTimeout(hoverTimer)});
+  // 显示态：父项汇总自身与所有子代理（aggMtime/aggActive 已注入到副本）
+  const showMtime=s._aggMtime||s.mtime;
+  const showActive=s._aggActive!==undefined?s._aggActive:s.active;
+  const titleRow=h("div",{class:"flex items-center gap-2"},
+    h("span",{class:"dot "+(showActive?"live":"idle")}),
+    h("span",{class:"ttl",text:s.title||"(无标题会话)"}));
+  if(pinned.has(s.id))titleRow.append(h("span",{class:"pin",text:"★"}));
+  // 父项：右上角折叠箭头 + 子代理计数徽章
+  if(opts.childCount){
+    const toggle=e=>{e.stopPropagation();toggleSubExpanded(s.sid);};
+    titleRow.append(h("span",{class:"subcnt",title:opts.childCount+" 个子代理",
+      onclick:toggle},"⊂"+opts.childCount));
+    titleRow.append(h("span",{class:"chev",title:opts.expanded?"折叠":"展开",
+      onclick:toggle},h("span",{class:"ic",text:"▸"})));
+  }
+  it.append(titleRow);
   if(s.preview)it.append(h("div",{class:"prev",text:s.preview}));
   const meta=h("div",{class:"metaline"},
     h("span",{class:"tag tag-"+s.source,text:s.source}),
-    h("span",{class:"mtime",text:relTime(s.mtime)}));
-  if(s.agentRole)meta.append(h("span",{class:"badge",text:s.agentRole}));
+    h("span",{class:"mtime",text:relTime(showMtime)}));
+  // 子代理行省 role 徽章（行本身已经在缩进里表达了身份）
+  if(s.agentRole&&!opts.sub)meta.append(h("span",{class:"badge",text:s.agentRole}));
   if(s.sid)meta.append(h("span",{class:"sid",title:s.sid,text:shortSid(s.sid)}));
   it.append(meta);
   return it;
 }
-// 列表增量渲染：每次只建一段 DOM，向下滚动再补
+/* 子代理展开状态：持久化按父 sid 记忆，默认全折叠 */
+const SUBEXP_KEY="codexui.subagentExpanded";
+let subExpanded=new Set();
+try{const raw=localStorage.getItem(SUBEXP_KEY);
+  if(raw)subExpanded=new Set(JSON.parse(raw));}catch(e){}
+function saveSubExpanded(){
+  try{localStorage.setItem(SUBEXP_KEY,JSON.stringify([...subExpanded]));}catch(e){}
+}
+function toggleSubExpanded(sid){
+  if(!sid)return;
+  if(subExpanded.has(sid))subExpanded.delete(sid);else subExpanded.add(sid);
+  saveSubExpanded();renderList();
+}
+function expandAllSub(){
+  for(const s of sessions.values())if(s.parentSid)subExpanded.add(s.parentSid);
+  saveSubExpanded();renderList();
+}
+function collapseAllSub(){subExpanded.clear();saveSubExpanded();renderList();}
+
+// 列表行可以是单个会话项，或一个『父+子』分组（折叠态只渲染父，展开态再追加子）
+// listRows 元素：{kind:"item",s} | {kind:"group",parent,children} | {kind:"divider"}
 let listRows=[], listShown=0;
 const LIST_CHUNK=120;
+function appendRow(frag,row){
+  if(row.kind==="divider"){frag.append(h("div",{class:"listdiv"}));return;}
+  if(row.kind==="item"){frag.append(buildItem(row.s));return;}
+  // group：父 + 可选的子项
+  const expanded=subExpanded.has(row.parent.sid);
+  frag.append(buildItem(row.parent,{childCount:row.children.length,expanded}));
+  if(expanded){
+    row.children.forEach((c,i)=>
+      frag.append(buildItem(c,{sub:true,last:i===row.children.length-1})));
+  }
+}
 function listChunk(){
   const lst=$("#list"),frag=document.createDocumentFragment();
   const end=Math.min(listShown+LIST_CHUNK,listRows.length);
-  for(let i=listShown;i<end;i++)frag.append(buildItem(listRows[i]));
+  for(let i=listShown;i<end;i++)appendRow(frag,listRows[i]);
   lst.append(frag);
   listShown=end;
+}
+// 关键词命中工具
+function matchKeyword(s,q){
+  if(!q)return true;
+  return ((s.title||"")+(s.preview||"")+(s.cwd||"")+(s.sid||"")+
+          (s.gitBranch||"")+(s.agentRole||"")).toLowerCase().includes(q);
 }
 function renderList(){
   refreshProjects();
   const q=$("#q").value.trim().toLowerCase();
-  listRows=[...sessions.values()].sort((a,b)=>b.mtime-a.mtime).filter(s=>{
+  // 1) 收集所有会话；按 parentSid 分组（仅 Claude 子代理有 parentSid）
+  const childrenBySid=new Map();       // parentSid → 子代理[]
+  const all=[...sessions.values()];
+  for(const s of all){
+    if(s.source==="claude"&&s.parentSid){
+      const arr=childrenBySid.get(s.parentSid)||[];
+      arr.push(s);childrenBySid.set(s.parentSid,arr);
+    }
+  }
+  // 2) 自动展开命中的父项（搜索匹配到子代理时）
+  if(q){
+    for(const [psid,kids] of childrenBySid){
+      if(kids.some(c=>matchKeyword(c,q)))subExpanded.add(psid);
+    }
+  }
+  // 3) 过滤函数（不含子代理 — 子代理跟随父项）
+  const passSrc=s=>{
     if(srcFilter!=="all"&&s.source!==srcFilter)return false;
     if(srcFilter==="claude"&&projectFilter!=="all"&&claudeProject(s)!==projectFilter)return false;
-    if(!inRange(s.mtime))return false;
-    if(q&&!((s.title||"")+(s.preview||"")+(s.cwd||"")).toLowerCase().includes(q))return false;
     return true;
+  };
+  const passDate=s=>pinned.has(s.id)||inRange(s._aggMtime||s.mtime);
+  // 4) 顶层 = 非子代理 + 找不到父的孤儿子代理（防止孤儿被吞掉）
+  const sidIndex=new Set(all.filter(s=>s.sid).map(s=>s.sid));
+  const tops=[];
+  for(const s of all){
+    if(s.source==="claude"&&s.parentSid){
+      if(sidIndex.has(s.parentSid))continue; // 有父，归到 group
+    }
+    tops.push(s);
+  }
+  // 5) 给每个顶层会话注入聚合 mtime/active（含子代理活动），用于排序与展示
+  for(const s of tops){
+    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
+    let m=s.mtime||0,active=!!s.active;
+    for(const c of kids){
+      if((c.mtime||0)>m)m=c.mtime||0;
+      if(c.active)active=true;
+    }
+    s._aggMtime=m;s._aggActive=active;
+  }
+  // 6) 过滤 + 排序：搜索时，父项匹配或任一子代理匹配都保留
+  const visible=tops.filter(s=>{
+    if(!passSrc(s))return false;
+    if(!passDate(s))return false;
+    if(!q)return true;
+    if(matchKeyword(s,q))return true;
+    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
+    return kids.some(c=>matchKeyword(c,q));
+  }).sort((a,b)=>{
+    const pa=pinned.has(a.id),pb=pinned.has(b.id);
+    if(pa!==pb)return pa?-1:1;
+    return ctime(b)-ctime(a); // 稳定的创建时间序，避免子代理活跃时父项乱跳
+  });
+  // 7) 组装 listRows；置顶组与其余之间插分隔线
+  listRows=[];let pinTop=0;
+  for(const s of visible)if(pinned.has(s.id))pinTop++;
+  visible.forEach((s,i)=>{
+    if(i===pinTop&&pinTop>0&&pinTop<visible.length)listRows.push({kind:"divider"});
+    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
+    if(kids.length){
+      // 子项按 mtime 倒序，搜索时把命中的子项放前面
+      const sortedKids=[...kids].sort((a,b)=>(b.mtime||0)-(a.mtime||0));
+      listRows.push({kind:"group",parent:s,children:sortedKids});
+    }else{
+      listRows.push({kind:"item",s});
+    }
   });
   const lst=$("#list"),keepTop=lst.scrollTop;
   lst.innerHTML="";listShown=0;
-  $("#sCount").textContent=listRows.length;
+  // 计数：父项+子代理（用户期望看到总数，与之前平铺一致）
+  let total=visible.length;
+  for(const s of visible)total+=((s.sid&&childrenBySid.get(s.sid))||[]).length;
+  $("#sCount").textContent=total;
   listChunk();
-  // 渲染足够多块以恢复原滚动位置
   while(listShown<listRows.length&&lst.scrollHeight<keepTop+lst.clientHeight+240)listChunk();
   lst.scrollTop=keepTop;
 }
@@ -1095,14 +1770,384 @@ function scheduleList(){
   listTimer=setTimeout(()=>{listTimer=null;renderList();},180);
 }
 
-async function openSession(id){
-  currentId=id;
+/* ── 会话置顶 + 右键菜单 ── */
+async function togglePin(id){
+  const on=!pinned.has(id);
+  if(on)pinned.add(id);else pinned.delete(id); // 乐观更新，立即重排
   renderList();
   try{
-    const r=await fetch("/api/session?id="+encodeURIComponent(id));
+    const r=await fetch("/api/pin?id="+encodeURIComponent(id)+"&on="+(on?1:0),{method:"POST"});
     if(!r.ok)throw 0;
-    renderSession(await r.json());
+  }catch(e){ // 失败回滚
+    if(on)pinned.delete(id);else pinned.add(id);
+    renderList();
+  }
+}
+function closeCtxMenu(){
+  const m=$("#ctxMenu");
+  m.classList.add("hidden");
+  m.classList.remove("sheet");
+  m.style.left="";m.style.top="";
+}
+// mobile=true → 底部 sheet 形态（全宽贴底，取消项压栈）；否则桌面浮窗
+function openCtxMenu(x,y,items,mobile){
+  const m=$("#ctxMenu");
+  m.innerHTML="";
+  m.classList.toggle("sheet",!!mobile);
+  for(const it of items){
+    if(it.div){m.append(h("div",{class:"my-1 h-px bg-white/[0.06]"}));continue;}
+    m.append(h("div",{class:"mi",onclick:()=>{closeCtxMenu();it.run();}},it.label));
+  }
+  if(mobile){
+    m.append(h("div",{class:"my-1 h-px bg-white/[0.06]"}));
+    m.append(h("div",{class:"mi",style:"justify-content:center;color:#9aa0e8;font-weight:500",
+      onclick:closeCtxMenu},"取消"));
+    m.classList.remove("hidden");
+    return;
+  }
+  m.style.left="-9999px";m.classList.remove("hidden"); // 先离屏渲染以测量尺寸
+  const mw=m.offsetWidth,mh=m.offsetHeight;
+  m.style.left=Math.min(x,innerWidth-mw-8)+"px";
+  m.style.top=Math.min(y,innerHeight-mh-8)+"px";
+}
+// 把"列表项 → 菜单项数组"逻辑抽出，桌面右键和移动端长按共用
+function buildListItemMenu(it){
+  const items=[];
+  if(it){
+    const id=it.dataset.id, sid=it.dataset.sid;
+    const sess=sessions.get(id);
+    items.push({label:pinned.has(id)?"取消置顶":"★ 置顶",run:()=>togglePin(id)});
+    if(it.classList.contains("exp"))
+      items.push({label:"折叠子代理",run:()=>toggleSubExpanded(sid)});
+    else if(sid&&[...sessions.values()].some(s=>s.parentSid===sid))
+      items.push({label:"展开子代理",run:()=>toggleSubExpanded(sid)});
+    // 分享该会话深链（同一 Wi-Fi 打开直达）— 缺 sid 的会话无法被定位，灰掉
+    if(sess&&sess.sid)
+      items.push({label:"🔗 分享会话",run:()=>window.openShareModal&&window.openShareModal(sess)});
+    items.push({div:true});
+  }
+  items.push({label:"展开全部子代理",run:expandAllSub});
+  items.push({label:"折叠全部子代理",run:collapseAllSub});
+  return items;
+}
+$("#list").addEventListener("contextmenu",e=>{
+  e.preventDefault();
+  const it=e.target.closest(".item");
+  openCtxMenu(e.clientX,e.clientY,buildListItemMenu(it),false);
+});
+// 点击别处 / 列表滚动 / 窗口失焦时关闭菜单
+document.addEventListener("mousedown",e=>{
+  if(!$("#ctxMenu").classList.contains("hidden")&&!e.target.closest("#ctxMenu"))closeCtxMenu();
+});
+window.addEventListener("blur",closeCtxMenu);
+$("#list").addEventListener("scroll",closeCtxMenu);
+
+/* ───────── 移动端：抽屉 / 长按 / 返回键 ───────── */
+const isMobile=()=>window.matchMedia("(max-width:767px)").matches;
+function openDrawer(){
+  document.body.classList.add("drawer-open");
+  // 用 history 接管浏览器返回键：返回 = 关抽屉
+  if(history.state?.drawer!==true)
+    history.pushState({drawer:true},"");
+}
+function closeDrawer(){
+  if(!document.body.classList.contains("drawer-open"))return;
+  document.body.classList.remove("drawer-open");
+  if(history.state?.drawer===true)history.back(); // 把 pushed state 弹掉
+}
+window.addEventListener("popstate",()=>{
+  // 系统返回键：若抽屉开着就关掉；否则放行（如菜单栏 webview 自己处理）
+  if(document.body.classList.contains("drawer-open"))
+    document.body.classList.remove("drawer-open");
+});
+$("#menuBtn")?.addEventListener("click",openDrawer);
+$("#drawerMask")?.addEventListener("click",closeDrawer);
+// 选会话后自动关抽屉（移动端）
+const _origOpenSession=openSession;
+openSession=function(id){
+  const r=_origOpenSession(id);
+  if(isMobile())closeDrawer();
+  return r;
+};
+// 双击顶栏标题区 = 切换抽屉（手势冗余，单手也能开）
+$("#barTitle")?.parentElement?.addEventListener("dblclick",()=>{
+  if(!isMobile())return;
+  document.body.classList.contains("drawer-open")?closeDrawer():openDrawer();
+});
+
+// 长按列表项 = 桌面右键菜单
+(function setupLongPress(){
+  const LIST=$("#list");let timer=null,startX=0,startY=0,target=null;
+  const cancel=()=>{if(timer){clearTimeout(timer);timer=null;}target=null;};
+  LIST.addEventListener("pointerdown",e=>{
+    if(e.pointerType==="mouse")return; // 仅触屏；鼠标走右键
+    if(e.target.closest(".chev,.subcnt"))return; // 折叠控件不算长按目标
+    const it=e.target.closest(".item");
+    if(!it)return;
+    target=it;startX=e.clientX;startY=e.clientY;
+    timer=setTimeout(()=>{
+      if(!target)return;
+      // 轻量触觉反馈（部分 Android Chrome 支持）
+      try{navigator.vibrate&&navigator.vibrate(12);}catch(_){}
+      openCtxMenu(0,0,buildListItemMenu(target),true);
+      timer=null;target=null;
+    },480);
+  });
+  LIST.addEventListener("pointermove",e=>{
+    if(!timer)return;
+    if(Math.hypot(e.clientX-startX,e.clientY-startY)>8)cancel(); // 抖动/滑动取消
+  });
+  ["pointerup","pointercancel","pointerleave"].forEach(ev=>
+    LIST.addEventListener(ev,cancel));
+})();
+
+/* ── 用量报表（主区域全幅展示） ── */
+let statsRaw=null, statsAt=0, statsBusy=false, statsPeriod="all", sidebarView="list", statsErrMsg="";
+// 切换主区域：会话视图 ⇄ 报表视图
+function setView(v){
+  sidebarView=v;
+  const rep=v==="report";
+  $("#scroll").classList.toggle("hidden",rep);
+  $("#reportMain").classList.toggle("hidden",!rep);
+  $("#composer").classList.toggle("hidden",rep);
+  if(rep)$("#jump").classList.add("hidden");
+  $("#tabList").classList.toggle("on",!rep);
+  $("#tabReport").classList.toggle("on",rep);
+  if(rep){
+    $("#barTitle").textContent="用量报表";
+    $("#barSub").textContent="";$("#barStatus").innerHTML="";$("#tokDock").innerHTML="";
+    statsRaw===null?loadStats():renderReport();
+  }else drawHeader(); // 恢复当前会话头部
+}
+async function loadStats(){
+  try{
+    const d=await(await fetch("/api/stats")).json();
+    statsRaw=d.sessions||[];statsAt=d.computedAt||0;
+    statsBusy=!!d.computing;statsErrMsg=d.error||"";
+  }catch(e){statsRaw=[];statsErrMsg="无法连接服务";}
+  renderReport();
+  // 从未计算过 → 自动触发一次（出错则不重试，避免死循环）
+  if(statsAt===0&&!statsBusy&&!statsRaw.length&&!statsErrMsg)recomputeStats();
+}
+async function recomputeStats(){
+  if(statsBusy)return;
+  statsBusy=true;renderReport();
+  try{await fetch("/api/stats/recompute",{method:"POST"});}
+  catch(e){statsBusy=false;renderReport();} // 完成由 SSE stats 事件通知
+}
+function renderReport(){
+  const v=$("#reportMain");v.innerHTML="";
+  const page=h("div",{class:"w-full max-w-[940px] mx-auto px-10 py-9"});
+  v.append(page);
+  const head=h("div",{class:"flex items-center gap-3 mb-1"},
+    h("div",{class:"text-[17px] font-semibold text-[#ededf0]"},"用量报表"),
+    h("div",{class:"flex-1"}),
+    h("span",{class:"text-[11px] text-[#54545d]",
+      text:statsBusy?"正在统计…":statsAt?"数据截至 "+clock(statsAt):"尚未生成"}));
+  const rb=h("button",{class:"rbtn",onclick:recomputeStats},statsBusy?"计算中…":"重新计算");
+  rb.disabled=statsBusy;head.append(rb);
+  page.append(head,
+    h("div",{class:"text-[10.5px] text-[#54545d] mb-7"},
+      "数据来源 ccusage · 按计费会话去重统计（会话数与左侧列表口径不同）"));
+  if(statsErrMsg)
+    page.append(h("div",{class:"mb-6 py-3 px-4 rounded-[12px] bg-rose/[0.09] "+
+      "ring-1 ring-rose/20 text-rose text-[12px]"},statsErrMsg));
+  if(!statsRaw||!statsRaw.length){
+    page.append(h("div",{class:"py-20 text-center text-[13px] text-[#54545d]"},
+      statsBusy?"正在通过 ccusage 统计用量，请稍候…":"暂无数据，点「重新计算」生成"));
+    return;
+  }
+  const pe=periodEntries();
+  const pl=(periodDefs().find(d=>d.key===statsPeriod)||{}).label||"累计";
+  page.append(
+    h("div",{class:"rsec",text:"周期概览 · 点选切换下方统计范围"}),reportPeriods(),
+    h("div",{class:"rsec mt-9",text:"用量趋势 · "+pl+" · 按成本"}),reportTrend(pe),
+    h("div",{class:"grid grid-cols-2 gap-5 mt-9"},
+      h("div",{},h("div",{class:"rsec",text:"来源占比 · "+pl}),reportSource(pe)),
+      h("div",{},h("div",{class:"rsec",text:"Top 项目 · "+pl}),reportProjects(pe))),
+    h("div",{class:"rsec mt-9",text:"模型用量 · "+pl}),reportModels(pe),
+    h("div",{class:"rsec mt-9",text:"Token 与成本 · "+pl}),reportTokens(pe));
+}
+// 周期定义：今日 / 本周 / 本月 / 累计
+function periodDefs(){
+  const now=new Date(),p2=n=>String(n).padStart(2,"0");
+  const ymd=d=>d.getFullYear()+"-"+p2(d.getMonth()+1)+"-"+p2(d.getDate());
+  const today=ymd(now);
+  const mon=new Date(now);mon.setDate(now.getDate()-((now.getDay()+6)%7));
+  const weekStart=ymd(mon), monthPfx=now.getFullYear()+"-"+p2(now.getMonth()+1);
+  return [
+    {key:"today",label:"今日",test:e=>e.date===today},
+    {key:"week", label:"本周",test:e=>e.date>=weekStart},
+    {key:"month",label:"本月",test:e=>e.date.slice(0,7)===monthPfx},
+    {key:"all",  label:"累计",test:()=>true},
+  ];
+}
+// 当前选中周期内的会话集合
+function periodEntries(){
+  const def=periodDefs().find(d=>d.key===statsPeriod)||periodDefs()[3];
+  return statsRaw.filter(e=>e.date&&def.test(e));
+}
+// 周期概览：四张卡可点选，点击即驱动下方所有统计
+function reportPeriods(){
+  const grid=h("div",{class:"grid grid-cols-4 gap-3"});
+  periodDefs().forEach(def=>{
+    let n=0,cost=0,out=0;
+    for(const e of statsRaw)if(e.date&&def.test(e)){n++;cost+=e.cost;out+=e.tokOut;}
+    grid.append(h("div",{class:"pcard"+(statsPeriod===def.key?" on":""),
+      onclick:()=>{statsPeriod=def.key;renderReport();}},
+      h("div",{class:"rk",text:def.label}),
+      h("div",{class:"rv text-[22px]",style:"color:#84cabb"},fmtCost(cost)),
+      h("div",{class:"text-[10.5px] text-[#62626b] mt-0.5",
+        text:num(n)+" 会话 · 输出 "+fmtTok(out)})));
+  });
+  return grid;
+}
+// 趋势：累计按月、其余周期按天分桶（粒度随周期自动切换）
+function reportTrend(entries){
+  const byMonth=statsPeriod==="all";
+  const bmap=new Map();
+  for(const e of entries){
+    if(!e.date)continue;
+    const k=byMonth?e.date.slice(0,7):e.date;
+    let b=bmap.get(k);
+    if(!b){b={key:k,sessions:0,cost:0,tok:0};bmap.set(k,b);}
+    b.sessions++;b.cost+=e.cost;b.tok+=e.tokIn+e.tokCache+e.tokOut;
+  }
+  const buckets=[...bmap.values()].sort((a,b)=>a.key<b.key?-1:1);
+  if(!buckets.length)return h("div",{class:"text-[12px] text-[#54545d]"},"无数据");
+  const max=Math.max(1e-9,...buckets.map(b=>b.cost));
+  const bars=h("div",{class:"flex items-end gap-[3px] h-[150px]"});
+  buckets.forEach((b,i)=>{
+    const bar=h("div",{class:"rbar"+(i===buckets.length-1?" last":""),
+      title:b.key+"  ·  "+fmtCost(b.cost)+" · "+b.sessions+" 会话 · "+fmtTok(b.tok)+" token"});
+    bar.style.height=Math.max(2,Math.round(b.cost/max*100))+"%";
+    bars.append(bar);
+  });
+  return h("div",{},bars,
+    h("div",{class:"flex justify-between mt-2 text-[10px] text-[#4a4a52] tabular-nums"},
+      h("span",{text:buckets[0].key}),
+      h("span",{class:"text-[#62626b]",text:"柱高 = 成本 · 峰值 "+fmtCost(max)}),
+      h("span",{text:buckets[buckets.length-1].key})));
+}
+function reportSource(entries){
+  let cx=0,cl=0;
+  for(const e of entries)e.source==="codex"?cx+=e.cost:cl+=e.cost;
+  const tot=cx+cl||1;
+  const sa=h("div"),sb=h("div");
+  sa.style.cssText="background:#d6b878;width:"+(cx/tot*100)+"%";
+  sb.style.cssText="background:#9aa0e8;width:"+(cl/tot*100)+"%";
+  const dot=c=>{const d=h("span");
+    d.style.cssText="width:7px;height:7px;border-radius:50%;flex:none;background:"+c;return d;};
+  const leg=(c,name,vv)=>h("div",{class:"flex items-center gap-2 text-[12px] text-[#9a9aa3]"},
+    dot(c),h("span",{class:"flex-1",text:name}),
+    h("span",{class:"tabular-nums text-[#bdbdc4]",text:fmtCost(vv)}),
+    h("span",{class:"tabular-nums text-[#54545d] w-[44px] text-right",
+      text:Math.round(vv/tot*100)+"%"}));
+  return h("div",{class:"rcard !p-4"},
+    h("div",{class:"flex h-[10px] rounded-full overflow-hidden bg-white/[0.04]"},sa,sb),
+    h("div",{class:"flex flex-col gap-2 mt-3"},
+      leg("#d6b878","Codex",cx),leg("#9aa0e8","Claude",cl)));
+}
+// 通用排行卡：按 keyFn 分组、按成本降序，画横条
+function reportRank(entries,keyFn,limit){
+  const m=new Map();
+  for(const e of entries){
+    const k=keyFn(e)||"—";
+    let x=m.get(k);if(!x){x={name:k,cost:0,n:0};m.set(k,x);}
+    x.cost+=e.cost;x.n++;
+  }
+  const arr=[...m.values()].sort((a,b)=>b.cost-a.cost).slice(0,limit);
+  if(!arr.length)return h("div",{class:"text-[12px] text-[#54545d]"},"无数据");
+  const max=Math.max(1e-9,...arr.map(x=>x.cost));
+  const wrap=h("div",{class:"rcard !p-4 flex flex-col gap-2.5"});
+  arr.forEach(x=>{
+    const fill=h("div",{class:"h-full rounded-full bg-accent/70"});
+    fill.style.width=Math.max(2,x.cost/max*100)+"%";
+    wrap.append(h("div",{class:"flex items-center gap-3"},
+      h("div",{class:"text-[12px] text-[#bdbdc4] truncate w-[160px] flex-none",
+        title:x.name+" · "+x.n+" 会话",text:x.name}),
+      h("div",{class:"flex-1 h-[7px] rounded-full bg-white/[0.04] overflow-hidden"},fill),
+      h("div",{class:"text-[11px] text-[#62626b] tabular-nums w-[64px] text-right flex-none",
+        text:fmtCost(x.cost)})));
+  });
+  return wrap;
+}
+function reportProjects(entries){return reportRank(entries,e=>e.project,8);}
+function reportModels(entries){return reportRank(entries,e=>e.model,6);}
+function reportTokens(entries){
+  let i=0,c=0,o=0,cost=0;
+  for(const e of entries){i+=e.tokIn;c+=e.tokCache;o+=e.tokOut;cost+=e.cost;}
+  const card=(label,val,col,tip)=>h("div",{class:"rcard flex-1"},
+    h("div",{class:"rk",text:label}),
+    h("div",{class:"rv text-[19px]",style:"color:"+col},val),
+    h("div",{class:"text-[10px] text-[#54545d] mt-0.5",text:tip}));
+  return h("div",{class:"flex gap-3"},
+    card("输入",fmtTok(i),"#84cabb","新增上下文"),
+    card("缓存读取",fmtTok(c),"#74747e","重复上下文命中"),
+    card("输出",fmtTok(o),"#9aa0e8","模型生成"),
+    card("总成本",fmtCost(cost),"#d6b878","ccusage 估算 USD"));
+}
+$("#tabList").addEventListener("click",()=>setView("list"));
+$("#tabReport").addEventListener("click",()=>setView("report"));
+
+/* ── 会话详情缓存：看过的会话切回即时呈现，悬停预取让首次点击也无感 ── */
+const detailCache=new Map();    // id → 详情 JSON（LRU，最近使用置末）
+const detailInflight=new Map(); // id → 进行中的请求 Promise（去重）
+const scrollMem=new Map();      // id → 离开该会话时的滚动位置
+const DETAIL_CACHE_MAX=8;
+function cacheGet(id){
+  const d=detailCache.get(id);
+  if(d){detailCache.delete(id);detailCache.set(id,d);} // 命中即标记为最近使用
+  return d;
+}
+function cachePut(id,d){
+  detailCache.delete(id);detailCache.set(id,d);
+  while(detailCache.size>DETAIL_CACHE_MAX)
+    detailCache.delete(detailCache.keys().next().value); // 淘汰最久未用
+}
+// 取会话详情：命中缓存 / 复用进行中的请求 / 否则发起请求
+function fetchDetail(id){
+  const c=cacheGet(id);
+  if(c)return Promise.resolve(c);
+  const inflight=detailInflight.get(id);
+  if(inflight)return inflight;
+  const p=fetch("/api/session?id="+encodeURIComponent(id))
+    .then(r=>{if(!r.ok)throw 0;return r.json();})
+    .then(d=>{detailInflight.delete(id);cachePut(id,d);return d;},
+          e=>{detailInflight.delete(id);throw e;});
+  detailInflight.set(id,p);
+  return p;
+}
+// 悬停预取：鼠标在某条上停留 140ms 即后台拉取，点击时通常已就绪
+let hoverTimer=null;
+function prefetchOnHover(id){
+  clearTimeout(hoverTimer);
+  if(id===currentId||detailCache.has(id)||detailInflight.has(id))return;
+  hoverTimer=setTimeout(()=>fetchDetail(id).catch(()=>{}),140);
+}
+// 仅移动选中高亮，点击时不重建整个列表
+function markSelected(id){
+  document.querySelectorAll("#list .item.sel").forEach(e=>e.classList.remove("sel"));
+  const el=document.querySelector('#list .item[data-id="'+id+'"]');
+  if(el)el.classList.add("sel");
+}
+
+async function openSession(id){
+  if(currentId&&currentId!==id)scrollMem.set(currentId,$("#scroll").scrollTop);
+  currentId=id;
+  markSelected(id);
+  const cached=cacheGet(id);
+  if(cached){ // 命中缓存：原样恢复（含滚动位置），零等待
+    renderSession(cached,true);
+    pendingNew=0;$("#jump").classList.add("hidden");
+    return;
+  }
+  try{
+    const data=await fetchDetail(id);
+    if(id!==currentId)return; // 切换过快：丢弃过期会话的响应
+    renderSession(data,false);
   }catch(e){
+    if(id!==currentId)return;
     $("#timeline").style.display="none";
     $("#empty").style.display="flex";
     $("#tokDock").innerHTML="";
@@ -1117,9 +2162,13 @@ function connectStream(){
     let d;try{d=JSON.parse(ev.data);}catch(e){return;}
     if(d.t==="session"){
       sessions.set(d.session.id,d.session);
+      const cd=detailCache.get(d.session.id);
+      if(cd)cd.summary=d.session; // 同步刷新缓存详情里的摘要
       scheduleList(); // 防抖刷新会话列表
       if(d.session.id===currentId){curSummary=d.session;drawHeader();}
-    }else if(d.t==="append"&&d.id===currentId){
+    }else if(d.t==="append"){
+      detailCache.delete(d.id); // 该会话有新事件，缓存作废，下次切回重新拉取
+      if(d.id!==currentId)return;
       const tl=$("#timeline"),before=tl.children.length;
       appendEvents(d.events);
       drawHeader();
@@ -1134,6 +2183,15 @@ function connectStream(){
         $("#jump").classList.remove("hidden");
         $("#jump").classList.add("flex");
       }
+    }else if(d.t==="stats"){
+      statsBusy=!!d.computing;
+      if(!statsBusy)statsRaw=null;        // 计算完成：作废本地缓存，下次渲染重拉
+      if(d.computedAt)statsAt=d.computedAt;
+      if(sidebarView==="report")
+        (statsRaw===null&&!statsBusy)?loadStats():renderReport();
+    }else if(d.t==="update"){
+      // App 自动更新状态推送：刷新关于页 + 顶栏角标
+      applyUpdateState(d);
     }
   };
 }
@@ -1145,10 +2203,23 @@ $("#list").addEventListener("scroll",()=>{
   if(listShown<listRows.length&&lst.scrollHeight-lst.scrollTop-lst.clientHeight<320)
     listChunk();
 });
+// 按需加载更宽日期范围的会话（today⊂week⊂month⊂all），已加载的不重复拉
+const RANGE_RANK={today:0,week:1,month:2,all:3};
+let loadedRange="today";
+async function ensureRange(rng){
+  if((RANGE_RANK[rng]??0)<=(RANGE_RANK[loadedRange]??0))return;
+  try{
+    const d=await(await fetch("/api/sessions?range="+rng)).json();
+    (d.sessions||[]).forEach(s=>sessions.set(s.id,s));
+    (d.pins||[]).forEach(id=>pinned.add(id));
+    loadedRange=rng;
+  }catch(e){}
+}
 document.querySelectorAll(".dpill[data-range]").forEach(b=>{
-  b.addEventListener("click",()=>{
+  b.addEventListener("click",async()=>{
     dateFilter=b.dataset.range;
     document.querySelectorAll(".dpill[data-range]").forEach(x=>x.classList.toggle("on",x===b));
+    await ensureRange(dateFilter);
     renderList();
   });
 });
@@ -1164,15 +2235,25 @@ $("#projSel").addEventListener("change",()=>{
   projectFilter=$("#projSel").value;
   renderList();
 });
+function applySearch(){
+  const q=$("#q2").value.trim().toLowerCase();
+  document.querySelectorAll("#timeline .ev").forEach(e=>{
+    e.classList.toggle("hideF",q&&!(e.dataset.text||"").includes(q));
+  });
+}
+let searchTimer=null;
 $("#q2").addEventListener("input",()=>{
   const ta=$("#q2"); // textarea 自动撑高
   ta.style.height="auto";
   ta.style.height=Math.min(ta.scrollHeight,120)+"px";
   if(composerMode)return; // 编写模式不做过滤
-  const q=ta.value.trim().toLowerCase();
-  document.querySelectorAll("#timeline .ev").forEach(e=>{
-    e.classList.toggle("hideF",q&&!(e.dataset.text||"").includes(q));
-  });
+  applySearch(); // 即时过滤已加载内容
+  // 防抖：向前补窗，让搜索覆盖整个会话而不止当前窗口
+  clearTimeout(searchTimer);
+  searchTimer=setTimeout(()=>{
+    const sc=$("#scroll"),pH=sc.scrollHeight,pT=sc.scrollTop;
+    if(ensureVisible(WIN))sc.scrollTop=pT+(sc.scrollHeight-pH);
+  },220);
 });
 $("#q2").addEventListener("keydown",e=>{
   if(composerMode&&e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();}
@@ -1184,6 +2265,9 @@ document.querySelectorAll(".fpill[data-cat]").forEach(b=>{
     b.classList.toggle("on",filters[c]);
     document.querySelectorAll('#timeline .ev[data-cat="'+c+'"]')
       .forEach(e=>e.classList.toggle("hidden",!filters[c]));
+    // 窗口内可见事件可能不足以铺满一屏 → 向前补窗，保证筛选结果完整
+    const sc=$("#scroll"),pH=sc.scrollHeight,pT=sc.scrollTop;
+    if(ensureVisible(WIN))sc.scrollTop=pT+(sc.scrollHeight-pH);
   });
 });
 $("#autoBtn").addEventListener("click",()=>{
@@ -1217,6 +2301,7 @@ $("#scroll").addEventListener("scroll",()=>{
 /* ── 设置面板：侧边栏分组 ── */
 const SMODULES=[
   {id:"gh",      name:"GitHub 账号"},
+  {id:"repos",   name:"仓库"},
   {id:"codex",   name:"Codex"},
   {id:"claude",  name:"Claude"},
   {id:"issue",   name:"Issue 过滤"},
@@ -1269,14 +2354,57 @@ function sBtn(label,accent,cb){
 }
 
 /* —— 仓库关联行 —— */
+// gh 仓库列表懒加载缓存：第一行打开时拉一次，所有行共享同一 datalist
+let __ghReposDL=null, __ghReposLoading=null;
+async function ensureGhReposDatalist(){
+  if(__ghReposDL)return __ghReposDL;
+  if(__ghReposLoading)return __ghReposLoading;
+  // 在 body 上挂一个共享 datalist
+  const dl=h("datalist",{id:"ghReposDL"});
+  document.body.append(dl);
+  __ghReposDL=dl;
+  __ghReposLoading=(async()=>{
+    try{
+      const d=await(await fetch("/api/gh/repos")).json();
+      if(d.ok&&Array.isArray(d.repos)){
+        d.repos.forEach(r=>{
+          const v=r.nameWithOwner||r.name||"";
+          if(!v)return;
+          const desc=r.description?(" — "+r.description):"";
+          dl.append(h("option",{value:v,label:v+desc}));
+        });
+      }
+    }catch(e){}
+    return dl;
+  })();
+  return __ghReposLoading;
+}
 function repoRow(rm){
-  rm=rm||{repo:"",localPath:"",branch:""};
+  rm=rm||{repo:"",localPath:"",branch:"",watch:true};
   const dlId="bl"+Math.random().toString(36).slice(2,8);
   const dl=h("datalist",{id:dlId});
-  const repoIn=h("input",{class:"setin",value:rm.repo||"",placeholder:"owner/repo"});
+  // repo input：聚焦时拉 gh repos 充 datalist；未登录 gh 时降级为纯文本输入
+  const repoIn=h("input",{class:"setin",value:rm.repo||"",
+    placeholder:"owner/repo（聚焦后会从 gh 拉账号下仓库）",list:"ghReposDL"});
+  repoIn.addEventListener("focus",ensureGhReposDatalist,{once:true});
   const pathIn=h("input",{class:"setin",value:rm.localPath||"",
-    placeholder:"/Users/你/work/仓库"});
+    placeholder:"/Users/你/work/仓库 — 或点旁边 📁 选目录"});
+  // Finder 按钮：调起 macOS choose folder
+  const pickBtn=h("button",{class:"sbtn",style:"flex:none;padding:6px 10px",
+    title:"用 Finder 选目录",
+    onclick:async()=>{
+      try{
+        const d=await(await fetch("/api/folder/pick",{method:"POST"})).json();
+        if(d.ok&&d.path){
+          pathIn.value=d.path;
+          pathIn.dispatchEvent(new Event("change",{bubbles:true}));
+          pathIn.dispatchEvent(new Event("input",{bubbles:true}));
+        }
+      }catch(e){}
+    }},"📁");
   const branchIn=h("input",{class:"setin",value:rm.branch||"",placeholder:"主分支",list:dlId});
+  let watch=rm.watch!==false;  // 缺省视为关注
+  const watchTog=sToggle(watch,v=>{watch=v;syncRepos();});
   async function loadBranches(){
     dl.innerHTML="";
     const p=pathIn.value.trim();
@@ -1295,11 +2423,15 @@ function repoRow(rm){
       h("button",{class:"setdel",text:"✕",title:"删除此仓库",
         onclick:()=>{row.remove();syncRepos();}})),
     h("div",{class:"flex items-center gap-3"},
-      h("span",{class:"setlbl",text:"本地"}),pathIn),
+      h("span",{class:"setlbl",text:"本地"}),pathIn,pickBtn),
     h("div",{class:"flex items-center gap-3"},
-      h("span",{class:"setlbl",text:"分支"}),branchIn,dl));
+      h("span",{class:"setlbl",text:"分支"}),branchIn,dl),
+    h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:"关注"}),watchTog,
+      h("span",{class:"sfdesc",style:"margin:0",
+        text:"开启后纳入菜单栏 issue / PR 汇总"})));
   row._get=()=>({repo:repoIn.value.trim(),localPath:pathIn.value.trim(),
-    branch:branchIn.value.trim()});
+    branch:branchIn.value.trim(),watch:watch});
   return row;
 }
 function syncRepos(){
@@ -1311,8 +2443,9 @@ function syncRepos(){
 function renderModule(){
   const box=$("#setBody");box.innerHTML="";
   const c=setCfg;
-  const fn={gh:renderGH,codex:renderCodex,claude:renderClaude,issue:renderIssue,
-    general:renderGeneral,perf:renderPerf,startup:renderStartup,about:renderAbout}[setModule];
+  const fn={gh:renderGH,repos:renderRepos,codex:renderCodex,claude:renderClaude,
+    issue:renderIssue,general:renderGeneral,perf:renderPerf,startup:renderStartup,
+    about:renderAbout}[setModule];
   if(fn)fn(box,c);
 }
 function renderGH(box){
@@ -1399,9 +2532,13 @@ function renderIssue(box,c){
     sField("在菜单栏显示 issue",null,sToggle(i.showInMenu,v=>i.showInMenu=v)),
     sField("「详情」命令模版","菜单栏 issue 详情按钮。占位符 {number} {repo} {path}。",
       sText(i.detailCmd,"",v=>i.detailCmd=v)));
-  box.append(h("div",{class:"sgrouptitle",text:"仓库关联"}));
-  box.append(h("div",{class:"sfdesc",style:"margin-bottom:10px",
-    text:"关联 GitHub 仓库与本地代码。菜单栏汇总这些仓库里的 issue。"}));
+  box.append(h("div",{class:"sfdesc",style:"margin-top:14px",
+    text:"仓库列表与「关注」开关已移至「仓库」模块 —— 菜单栏只汇总已关注仓库的 issue。"}));
+}
+function renderRepos(box,c){
+  box.append(h("div",{class:"sfdesc",style:"margin-bottom:14px",
+    text:"关联 GitHub 仓库与本地代码。开启「关注」的仓库会纳入菜单栏的 issue / PR "+
+         "汇总；本地路径供「详情」按钮在对应目录里执行命令。"}));
   const rows=h("div",{class:"flex flex-col gap-3",id:"repoRows"});
   (c.repos||[]).forEach(rm=>rows.append(repoRow(rm)));
   box.append(rows);
@@ -1448,6 +2585,10 @@ function renderStartup(box,c){
       v=>s.onWindowClose=v)));
 }
 function renderAbout(box,c){
+  // 版本 / 更新 区块（独立容器，便于 SSE 实时刷新）
+  const updRow=h("div");
+  box.append(updRow);
+  redrawUpdate(updRow);
   box.append(
     sField("立即重新扫描","马上全量扫描一次会话文件。",
       sBtn("重新扫描",false,async()=>{
@@ -1458,6 +2599,104 @@ function renderAbout(box,c){
     sField("导入配置","从 JSON 文件载入配置，需点「保存」生效。",sBtn("导入",false,importCfg)),
     sField("配置文件",null,h("div",{class:"sfdesc",text:"~/.codex-viewer.json"})));
 }
+// 把更新状态渲染到 about 页的 updRow 容器；每次 SSE 推 update 都重画一次
+function redrawUpdate(row){
+  if(!row)return;
+  const s=window.__updState||{status:"idle",current:"加载中…"};
+  row.innerHTML="";
+  const cur=s.current||"未知", latest=s.latest||"";
+  // 版本号 + 状态徽章
+  let badge="—", badgeCls="bg-white/[0.04] text-[#9a9aa3]";
+  if(s.status==="checking"){badge="检查中…";badgeCls="bg-accent/[0.12] text-accent";}
+  else if(s.status==="up-to-date"){badge="已是最新";badgeCls="bg-sage/[0.14] text-sage";}
+  else if(s.status==="available"){badge="新版可用："+latest;badgeCls="bg-sand/[0.16] text-sand";}
+  else if(s.status==="downloading"){badge="下载中 "+(s.progress||0)+"%";badgeCls="bg-accent/[0.14] text-accent";}
+  else if(s.status==="ready"){badge="已就绪："+latest+" · 重启应用";badgeCls="bg-sage/[0.18] text-sage";}
+  else if(s.status==="error"){badge="错误："+(s.message||"");badgeCls="bg-rose/[0.16] text-rose";}
+  const verCtl=h("div",{class:"flex items-center gap-2 flex-wrap"},
+    h("span",{class:"text-[13px] text-[#d4d4da] font-mono",text:cur}),
+    h("span",{class:"text-[11px] px-2 py-[2px] rounded-[6px] "+badgeCls,text:badge}));
+  // 操作按钮根据状态切换
+  const actions=h("div",{class:"flex items-center gap-2 mt-2 flex-wrap"});
+  const checkBtn=sBtn("立即检查",false,async()=>{
+    try{await fetch("/api/update/check",{method:"POST"});}catch(e){}
+  });
+  actions.append(checkBtn);
+  if(s.status==="available"){
+    actions.append(sBtn("下载更新",true,async()=>{
+      try{await fetch("/api/update/download",{method:"POST"});}catch(e){}
+    }));
+  }
+  if(s.status==="ready"){
+    actions.append(sBtn("重启应用",true,async()=>{
+      if(!confirm("确认现在重启应用以应用更新？\n（未保存的对话仍会保留在文件里。）"))return;
+      try{await fetch("/api/update/apply",{method:"POST"});}catch(e){}
+    }));
+  }
+  if(latest&&s.url){
+    actions.append(h("a",{href:s.url,target:"_blank",
+      class:"text-[11.5px] text-[#74747e] hover:text-accent transition self-center ml-2",
+      text:"在 GitHub 查看 ↗"}));
+  }
+  row.append(sField("版本","当前已运行的版本；每 30 分钟自动检查更新。",
+    h("div",{},verCtl,actions)));
+}
+// 全局 SSE update 事件 → 缓存最新状态 + 触发 about 页重绘 + 顶栏角标刷新
+window.__updState=null;
+function applyUpdateState(s){
+  window.__updState=s;
+  // 关于页可能正在显示，重画其更新区
+  const set=$("#settings");
+  if(set&&!set.classList.contains("hidden")){
+    const setBody=$("#setBody");
+    if(setBody){
+      const first=setBody.querySelector(":scope > div"); // updRow 是第一个 child
+      if(first&&first.querySelector(".sflabel")?.textContent==="版本")
+        redrawUpdate(first);
+    }
+  }
+  drawUpdateBadge();
+}
+// 顶栏角标：available/ready 时显示
+function drawUpdateBadge(){
+  let el=document.getElementById("updateBadge");
+  const s=window.__updState||{};
+  const show=s.status==="available"||s.status==="ready"||s.status==="downloading";
+  if(!show){el&&el.remove();return;}
+  if(!el){
+    el=document.createElement("button");
+    el.id="updateBadge";
+    el.title="点击查看更新";
+    el.style.cssText="position:absolute;top:14px;right:14px;z-index:50;"+
+      "padding:5px 11px;border-radius:999px;font-size:11.5px;font-weight:500;"+
+      "background:rgba(214,184,120,.18);color:#d6b878;cursor:pointer;"+
+      "border:1px solid rgba(214,184,120,.35);backdrop-filter:blur(6px);"+
+      "transition:background .15s";
+    el.onmouseenter=()=>el.style.background="rgba(214,184,120,.28)";
+    el.onmouseleave=()=>el.style.background="rgba(214,184,120,.18)";
+    el.onclick=()=>{
+      // 打开设置 → 关于
+      $("#openSet")?.click();
+      // 略等一帧再切到 about tab
+      setTimeout(()=>{
+        const nav=[...document.querySelectorAll("#setNav .snav")]
+          .find(n=>n.textContent.includes("关于"));
+        nav&&nav.click();
+      },100);
+    };
+    document.body.append(el);
+  }
+  if(s.status==="downloading")el.textContent="● 下载中 "+(s.progress||0)+"%";
+  else if(s.status==="ready")el.textContent="● 新版已就绪 · 重启应用";
+  else el.textContent="● 新版可用："+(s.latest||"");
+}
+// 启动时拉一次 version 接口建立基线
+(async function bootVersionState(){
+  try{
+    const d=await(await fetch("/api/version")).json();
+    if(d&&d.state)applyUpdateState(d.state);
+  }catch(_){}
+})();
 function exportCfg(){
   const blob=new Blob([JSON.stringify(setCfg,null,2)],{type:"application/json"});
   const a=h("a",{href:URL.createObjectURL(blob),download:"codex-viewer.json"});
@@ -1478,6 +2717,7 @@ function importCfg(){
 // normalizeCfg 补齐缺失的子对象，避免渲染时报错。
 function normalizeCfg(c){
   c.repos=c.repos||[];
+  c.repos.forEach(r=>{if(r.watch===undefined)r.watch=true;}); // 旧配置缺省视为关注
   c.codex=c.codex||{};c.claude=c.claude||{};c.issue=c.issue||{};
   c.general=c.general||{};c.perf=c.perf||{};c.startup=c.startup||{};
 }
@@ -1498,6 +2738,21 @@ async function openSettings(){
   renderModule();
 }
 window.openSettings=openSettings;
+// 供菜单栏「活跃会话」标签页调用：切到会话视图并定位到指定会话。
+// classic script 里 `function openSession` 同名挂全局，被 window.openSession 覆盖后
+// 内部 `openSession(id)` 在 WebKit/JSC 下会走全局对象 → 自身递归 → RangeError。
+// 把原函数引用先存到局部 const，proxy 通过局部引用调用。
+const _openSessionImpl=openSession;
+window.openSession=function(id){
+  if(!id)return;
+  if(!$("#settings").classList.contains("hidden"))closeSettings();
+  if(sidebarView==="report")setView("list");
+  _openSessionImpl(id);
+  requestAnimationFrame(()=>{
+    const el=document.querySelector('#list .item[data-id="'+id.replace(/"/g,'\\"')+'"]');
+    if(el)el.scrollIntoView({block:"center"});
+  });
+};
 function closeSettings(){$("#settings").classList.add("hidden");}
 function validateCfg(c){
   if(c.codex.sendCmd&&!c.codex.sendCmd.includes("{input}"))
@@ -1526,26 +2781,270 @@ $("#setClose").addEventListener("click",closeSettings);
 $("#setSave").addEventListener("click",saveSettings);
 $("#openSet").addEventListener("click",openSettings);
 document.addEventListener("keydown",e=>{
-  if(e.key==="Escape"&&!$("#settings").classList.contains("hidden"))closeSettings();
+  const tag=(e.target.tagName||"").toLowerCase();
+  const typing=tag==="input"||tag==="textarea"||tag==="select";
+  if(e.key==="Escape"){
+    closeCtxMenu();
+    if(document.activeElement===$("#q")&&$("#q").value){
+      $("#q").value="";scheduleList();$("#q").blur();
+    }
+    if(!$("#settings").classList.contains("hidden"))closeSettings();
+    return;
+  }
+  if(typing)return;
+  if(e.key==="/"){ // 聚焦搜索框
+    e.preventDefault();setView("list");$("#q").focus();return;
+  }
+  if((e.key==="ArrowDown"||e.key==="ArrowUp")&&sidebarView==="list"&&listRows.length){
+    e.preventDefault();
+    const down=e.key==="ArrowDown";
+    // 把 listRows 展开成可选中的会话扁平序列（父项 + 展开态下的子项），跳过 divider
+    const flat=[],rowIdx=[];
+    listRows.forEach((r,ri)=>{
+      if(r.kind==="divider")return;
+      if(r.kind==="item"){flat.push(r.s);rowIdx.push(ri);return;}
+      flat.push(r.parent);rowIdx.push(ri);
+      if(subExpanded.has(r.parent.sid))
+        r.children.forEach(c=>{flat.push(c);rowIdx.push(ri);});
+    });
+    if(!flat.length)return;
+    let i=flat.findIndex(s=>s.id===currentId);
+    i=(i<0?(down?-1:0):i)+(down?1:-1);
+    i=Math.max(0,Math.min(flat.length-1,i));
+    const s=flat[i];if(!s)return;
+    while(listShown<=rowIdx[i]&&listShown<listRows.length)listChunk();
+    openSession(s.id);
+    const el=document.querySelector('#list .item[data-id="'+s.id+'"]');
+    if(el)el.scrollIntoView({block:"nearest"});
+  }
 });
 
 /* ── 启动 ── */
+// 深链解析：?type=codex|claude&session=<sid> → 在已加载会话中找匹配项
+// 找不到时返回 null（调用方决定要不要拉全量重试）
+function findBySidType(type,sid){
+  if(!type||!sid)return null;
+  let best=null;
+  for(const s of sessions.values()){
+    if(s.source!==type||s.sid!==sid)continue;
+    // 同 sid 多匹配（worktree 共用 sid）：取 mtime 最大的
+    if(!best||(s.mtime||0)>(best.mtime||0))best=s;
+  }
+  return best;
+}
 async function boot(){
   // app 模式：启用 macOS 窗口布局（标题栏拖拽区 + 系统红绿灯安全区）
-  if(new URLSearchParams(location.search).get("app")){
-    document.body.classList.add("app");
+  const qs=new URLSearchParams(location.search);
+  if(qs.get("app"))document.body.classList.add("app");
+  const deepType=qs.get("type"), deepSid=qs.get("session");
+  if(deepType||deepSid){
+    // 消费完即从 URL 移除，避免刷新/分享时被反复触发
+    qs.delete("type");qs.delete("session");
+    const s=qs.toString();
+    history.replaceState(null,"",location.pathname+(s?"?"+s:"")+location.hash);
   }
   try{
-    const d=await(await fetch("/api/sessions")).json();
+    // 深链场景：直接拉全量（老会话点链接打不开会迷茫），并把日期过滤切到"全部"
+    const range=(deepType&&deepSid)?"all":"today";
+    if(range==="all"){
+      dateFilter="all";loadedRange="all";
+      document.querySelectorAll(".dpill[data-range]").forEach(x=>
+        x.classList.toggle("on",x.dataset.range==="all"));
+    }
+    const d=await(await fetch("/api/sessions?range="+range)).json();
     $("#rootPath").textContent=(d.sources||[]).join(" · ")+" 实时监控";
     (d.sessions||[]).forEach(s=>sessions.set(s.id,s));
+    (d.pins||[]).forEach(id=>pinned.add(id));
     renderList();
-    const sorted=[...sessions.values()].sort((a,b)=>b.mtime-a.mtime);
-    const first=sorted.find(s=>inRange(s.mtime))||sorted[0];
-    if(first)openSession(first.id);
+    // 优先级：深链匹配 > 今天最新 > 任意最新
+    let target=findBySidType(deepType,deepSid);
+    if(!target){
+      const sorted=[...sessions.values()].sort((a,b)=>ctime(b)-ctime(a));
+      target=sorted.find(s=>inRange(s.mtime))||sorted[0];
+      if(deepType&&deepSid)
+        $("#rootPath").textContent="未找到分享的会话（可能已被删除或归档）";
+    }
+    if(target)openSession(target.id);
   }catch(e){$("#rootPath").textContent="加载失败";}
   connectStream();
 }
+/* ── 新任务启动器 & 分享链接 —— 包 try/catch 防止解析期错误打断 boot ── */
+try{(function(){
+  const M=$("#runModal");
+  if(!M)return; // 缺元素静默退出
+  let agent="claude", cwd="", recent=[];
+
+  function open(){
+    M.classList.remove("hidden");
+    $("#runStatus").textContent="";
+    fetch("/api/fs/home",{credentials:"same-origin"}).then(r=>r.json()).then(d=>{
+      recent=d.recent||[];renderRecent(d.shortcuts||[]);
+      if(!cwd)loadDir(d.home); else loadDir(cwd);
+    }).catch(()=>{if(cwd)loadDir(cwd);});
+    setTimeout(()=>$("#runPrompt").focus(),50);
+  }
+  function close(){ M.classList.add("hidden"); }
+
+  function renderRecent(shortcuts){
+    const el=$("#runRecent");el.innerHTML="";
+    const seen=new Set(),list=[];
+    for(const p of recent.concat(shortcuts)){
+      if(p&&!seen.has(p)){seen.add(p);list.push(p);}
+      if(list.length>=10)break;
+    }
+    for(const p of list){
+      const b=h("button",{class:"rrecent",title:p,text:shortPath(p)});
+      b.onclick=()=>{$("#runCwd").value=p;loadDir(p);};
+      el.append(b);
+    }
+  }
+  function shortPath(p){
+    const home=recent[0]&&recent[0].startsWith("/Users/")?recent[0].split("/").slice(0,3).join("/"):"";
+    let s=p;if(home&&s.startsWith(home))s="~"+s.slice(home.length);
+    const parts=s.split("/").filter(Boolean);
+    return parts.length<=2?s:".../"+parts.slice(-2).join("/");
+  }
+
+  function loadDir(p){
+    $("#runCwd").value=p;cwd=p;
+    fetch("/api/fs/ls?path="+encodeURIComponent(p),{credentials:"same-origin"})
+      .then(r=>r.json()).then(d=>{
+        if(!d.ok){$("#runDirList").innerHTML="<div class='px-3 py-2 text-[12px] text-rose'>"+esc(d.error||"加载失败")+"</div>";return;}
+        renderCrumbs(d.path,d.parent);
+        const list=$("#runDirList");list.innerHTML="";
+        if(d.parent){
+          const up=h("div",{class:"rdir"},h("span",{class:"ic",text:"↑"}),h("span",{text:"..（上一级）"}));
+          up.onclick=()=>loadDir(d.parent);list.append(up);
+        }
+        for(const e of d.dirs){
+          const row=h("div",{class:"rdir"},h("span",{class:"ic",text:"▸"}),h("span",{text:e.name}));
+          row.onclick=()=>loadDir(e.path);list.append(row);
+        }
+        if(d.dirs.length===0){
+          list.append(h("div",{class:"px-3 py-2 text-[11px] text-[#62626b]",
+            text:"（此目录下无子目录；点上方面包屑切换或直接在输入框输入路径）"}));
+        }
+      });
+  }
+  function renderCrumbs(path,parent){
+    const el=$("#runCrumbs");el.innerHTML="";
+    const parts=path.split("/").filter(Boolean);
+    const root=h("span",{class:"rcrumb",text:"/"});root.onclick=()=>loadDir("/");el.append(root);
+    let acc="";
+    for(let i=0;i<parts.length;i++){
+      acc+="/"+parts[i];
+      if(i)el.append(h("span",{class:"text-[#3a3a42]",text:"/"}));
+      const cur=acc;
+      const c=h("span",{class:"rcrumb",text:parts[i]});c.onclick=()=>loadDir(cur);el.append(c);
+    }
+  }
+
+  async function run(){
+    const prompt=$("#runPrompt").value.trim();
+    const useCwd=$("#runCwd").value.trim()||cwd;
+    if(!prompt){$("#runStatus").textContent="✗ prompt 不能为空";return;}
+    if(!useCwd){$("#runStatus").textContent="✗ 请选择工作目录";return;}
+    // 兜底再确认一次 agent 与 .on 视觉态一致
+    const onBtn=document.querySelector("#runAgent .ragent.on");
+    if(onBtn&&onBtn.dataset.agent)agent=onBtn.dataset.agent;
+    $("#runStatus").textContent="启动 "+agent+" 中…";
+    $("#runGo").disabled=true;
+    try{
+      const d=await(await fetch("/api/run",{method:"POST",
+        headers:{"Content-Type":"application/json"},credentials:"same-origin",
+        body:JSON.stringify({agent:agent,mode:"new",cwd:useCwd,prompt:prompt})})).json();
+      if(d.ok){
+        $("#runStatus").textContent="✓ "+agent+" 已启动 (pid "+d.pid+")，新会话即将出现在列表";
+        $("#runPrompt").value="";
+        setTimeout(close,1200);
+      }else{
+        $("#runStatus").textContent="✗ "+(d.error||"启动失败");
+      }
+    }catch(e){$("#runStatus").textContent="✗ "+(e.message||"启动失败");}
+    $("#runGo").disabled=false;
+  }
+
+  // agent 切换：直接给每个 .ragent 绑事件，不挂 document（避免任何全局副作用）
+  for(const b of M.querySelectorAll("#runAgent .ragent")){
+    b.addEventListener("click",()=>{
+      agent=b.dataset.agent;
+      for(const x of M.querySelectorAll("#runAgent .ragent"))
+        x.classList.toggle("on",x===b);
+    });
+  }
+  const nb=$("#newTaskBtn"); if(nb)nb.addEventListener("click",open);
+  $("#runClose").addEventListener("click",close);
+  $("#runCancel").addEventListener("click",close);
+  $("#runGo").addEventListener("click",run);
+  M.addEventListener("click",e=>{if(e.target===M)close();});
+  $("#runCwd").addEventListener("change",e=>{const v=e.target.value.trim();if(v)loadDir(v);});
+  $("#runPrompt").addEventListener("keydown",e=>{
+    if((e.metaKey||e.ctrlKey)&&e.key==="Enter"){e.preventDefault();run();}
+  });
+  document.addEventListener("keydown",e=>{
+    if(e.key==="Escape"&&!M.classList.contains("hidden"))close();
+  });
+})();}catch(e){console.error("[runModal init]",e);}
+
+try{(function(){
+  const M=$("#shareModal");
+  if(!M)return;
+  // sess 为可选会话上下文：传入则生成"打开即定位"的深链
+  async function open(sess){
+    M.classList.remove("hidden");
+    // 改写 modal 头部以区分两种分享场景
+    const titleEl=$("#shareTitle"), subEl=$("#shareSub");
+    if(sess&&sess.sid){
+      if(titleEl)titleEl.textContent="⇪ 分享会话";
+      if(subEl)subEl.textContent=trunc(oneline(sess.title||"(无标题会话)"),48);
+    }else{
+      if(titleEl)titleEl.textContent="⇪ 分享链接";
+      if(subEl)subEl.textContent="同一 Wi-Fi 打开即可使用";
+    }
+    const list=$("#shareList");list.innerHTML="<div class='text-[12px] text-[#62626b] px-1'>加载中…</div>";
+    try{
+      const d=await(await fetch("/api/lan-url",{credentials:"same-origin"})).json();
+      list.innerHTML="";
+      const urls=(d.urls||[]).slice();
+      const local="http://127.0.0.1:"+(d.port||location.port||"")+"/?t="+(d.token||"");
+      urls.unshift(local);
+      // 深链 query 拼接：?t=...&type=<source>&session=<sid>
+      const decorate=u=>{
+        if(!sess||!sess.sid)return u;
+        const sep=u.includes("?")?"&":"?";
+        return u+sep+"type="+encodeURIComponent(sess.source||"")
+                 +"&session="+encodeURIComponent(sess.sid);
+      };
+      for(const u of urls){
+        const link=decorate(u);
+        const row=h("div",{class:"shareRow"},
+          h("span",{class:"url",text:link}),
+          h("button",{class:"cpy",text:"复制"}));
+        row.querySelector(".cpy").onclick=()=>{
+          navigator.clipboard.writeText(link).then(
+            ()=>{row.querySelector(".cpy").textContent="✓ 已复制";
+                 setTimeout(()=>row.querySelector(".cpy").textContent="复制",1500);},
+            ()=>{row.querySelector(".cpy").textContent="✗ 失败";}
+          );
+        };
+        list.append(row);
+      }
+      if(urls.length===1)list.append(h("div",{class:"text-[11px] text-[#62626b] px-1 pt-1",
+        text:"未检测到 LAN IPv4 地址；可能未连 Wi-Fi 或网卡未启用"}));
+    }catch(e){
+      list.innerHTML="<div class='text-[12px] text-rose px-1'>加载失败："+esc(e.message||"")+"</div>";
+    }
+  }
+  function close(){M.classList.add("hidden");}
+  window.openShareModal=open; // 暴露给右键/长按菜单使用
+  const sb=$("#shareBtn"); if(sb)sb.addEventListener("click",()=>open());
+  $("#shareClose").addEventListener("click",close);
+  M.addEventListener("click",e=>{if(e.target===M)close();});
+  document.addEventListener("keydown",e=>{
+    if(e.key==="Escape"&&!M.classList.contains("hidden"))close();
+  });
+})();}catch(e){console.error("[shareModal init]",e);}
+
 boot();
 </script>
 </body>
