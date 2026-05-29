@@ -703,6 +703,7 @@ const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?"":s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const sessions=new Map();
 const pinned=new Set(); // 置顶会话 ID
+const running=new Map(); // sid → {pid,agent,cwd,prompt,startedAt} —— 后端正在跑的 spawn 任务
 let currentId=null, ctx=null, autoFollow=true, pendingNew=0, composerMode=false;
 let curSummary=null, stat={events:0,tools:0,tokIn:0,tokOut:0,user:0,asst:0,ctxUsed:0,ctxWin:0};
 const filters={chat:true,think:false,tool:false,system:false}; // 默认只显示对话
@@ -1466,7 +1467,32 @@ function drawHeader(){
   const st=$("#barStatus");st.innerHTML="";
   st.append(h("span",{class:"pill"},
     h("span",{class:"dot "+(s.active?"live":"idle")}),s.active?"实时":"已结束"));
+  // 后端正在 spawn 这个会话的 CLI → 让用户能看到 + 一键终止
+  if(s.sid&&running.has(s.sid)){
+    const info=running.get(s.sid);
+    const ago=Math.max(0,Math.round((Date.now()-(info.startedAt||Date.now()))/1000));
+    const dur=ago<60?ago+"s":Math.round(ago/60)+"m";
+    const btn=h("button",{
+      class:"pill",
+      style:"margin-left:6px;cursor:pointer;color:#e0879a;border-color:rgba(224,135,154,.35)",
+      title:"后台 "+(info.agent||"")+" 进程 pid "+(info.pid||"?")+" 已运行 "+dur+"，点击终止",
+      onclick:()=>killRunning(s.sid)
+    },h("span",{style:"color:#e0879a;margin-right:4px"},"⏹"),"终止");
+    st.append(h("span",{class:"pill",style:"margin-left:6px;color:#d8b46a;border-color:rgba(216,180,106,.35)",
+      title:"该会话当前由本应用后端在 spawn"},
+      h("span",{style:"margin-right:4px"},"⚡"),"后端运行中 · "+dur));
+    st.append(btn);
+  }
   drawTokens();
+}
+async function killRunning(sid){
+  if(!sid||!running.has(sid))return;
+  if(!confirm("确定终止该会话的后端 CLI 进程？\n（SIGTERM，2s 后未退则 SIGKILL）"))return;
+  try{
+    const d=await(await fetch("/api/run/kill?sid="+encodeURIComponent(sid),
+      {method:"POST"})).json();
+    if(!d.ok)alert("终止失败："+(d.error||""));
+  }catch(e){alert("终止失败："+(e.message||""));}
 }
 // 工具栏中部用量统计：图标即标签，紧凑显示，随事件流实时更新
 function drawTokens(){
@@ -1783,6 +1809,26 @@ async function togglePin(id){
     renderList();
   }
 }
+// 复制文本到剪贴板，成功/失败都用 barSub 短暂提示
+function copyText(t){
+  if(!t)return;
+  const tip=msg=>{const el=$("#barSub");if(!el)return;
+    const old=el.textContent;el.textContent=msg;
+    setTimeout(()=>{if(el.textContent===msg)el.textContent=old;},1200);};
+  navigator.clipboard.writeText(t).then(
+    ()=>tip("✓ 已复制 "+t),
+    ()=>tip("✗ 复制失败")
+  );
+}
+// 让后端调起 VSCode 打开 jsonl
+async function openInEditor(path){
+  if(!path)return;
+  try{
+    const d=await(await fetch("/api/open-in-editor?path="+encodeURIComponent(path),
+      {method:"POST"})).json();
+    if(!d.ok)alert("打开失败："+(d.error||""));
+  }catch(e){alert("打开失败："+(e.message||""));}
+}
 function closeCtxMenu(){
   const m=$("#ctxMenu");
   m.classList.add("hidden");
@@ -1824,6 +1870,10 @@ function buildListItemMenu(it){
     // 分享该会话深链（同一 Wi-Fi 打开直达）— 缺 sid 的会话无法被定位，灰掉
     if(sess&&sess.sid)
       items.push({label:"🔗 分享会话",run:()=>window.openShareModal&&window.openShareModal(sess)});
+    if(sess&&sess.sid)
+      items.push({label:"📋 复制 session id",run:()=>copyText(sess.sid)});
+    if(sess&&sess.file)
+      items.push({label:"📝 用 VSCode 打开 jsonl",run:()=>openInEditor(sess.file)});
     items.push({div:true});
   }
   items.push({label:"展开全部子代理",run:expandAllSub});
@@ -2192,6 +2242,12 @@ function connectStream(){
     }else if(d.t==="update"){
       // App 自动更新状态推送：刷新关于页 + 顶栏角标
       applyUpdateState(d);
+    }else if(d.t==="running"){
+      // 后端 spawn 状态变更：维护本地 map，若与当前会话相关则刷新 header
+      if(d.on){running.set(d.sid,{pid:d.pid,agent:d.agent,cwd:d.cwd,prompt:d.prompt,startedAt:d.startedAt});}
+      else{running.delete(d.sid);}
+      if(curSummary&&curSummary.sid===d.sid)drawHeader();
+      // 列表项可能也要标记，留给以后；先只刷 header
     }
   };
 }
@@ -2331,6 +2387,13 @@ function sNum(val,cb){
   i.addEventListener("input",()=>cb(parseInt(i.value,10)||0));
   return i;
 }
+function sTextarea(val,ph,cb){
+  const t=h("textarea",{class:"setin",placeholder:ph||""});
+  t.style.width="100%";t.style.minHeight="64px";t.style.resize="vertical";
+  t.value=val==null?"":val;
+  t.addEventListener("input",()=>cb(t.value));
+  return t;
+}
 function sToggle(on,cb){
   let v=!!on;
   const knob=h("span",{class:"swknob"});
@@ -2385,7 +2448,7 @@ function repoRow(rm){
   const dl=h("datalist",{id:dlId});
   // repo input：聚焦时拉 gh repos 充 datalist；未登录 gh 时降级为纯文本输入
   const repoIn=h("input",{class:"setin",value:rm.repo||"",
-    placeholder:"owner/repo（聚焦后会从 gh 拉账号下仓库）",list:"ghReposDL"});
+    placeholder:"owner/repo（聚焦后会从 gh 拉账号 + 所属组织的仓库）",list:"ghReposDL"});
   repoIn.addEventListener("focus",ensureGhReposDatalist,{once:true});
   const pathIn=h("input",{class:"setin",value:rm.localPath||"",
     placeholder:"/Users/你/work/仓库 — 或点旁边 📁 选目录"});
@@ -2558,7 +2621,11 @@ function renderGeneral(box,c){
     pathField,
     sField("打开会话用的终端","「继续对话」「详情」按钮用哪个终端。",sSelect(g.terminal,[
       {v:"iterm",t:"iTerm2"},{v:"terminal",t:"Terminal"},{v:"auto",t:"自动"}],
-      v=>g.terminal=v)));
+      v=>g.terminal=v)),
+    sField("命令搜索路径（PATH）",
+      "用量统计依赖 ccusage（需要 node/npx）。若提示「找不到 / exit status 127」，把 node 所在目录填这里；多个目录用换行或冒号分隔。可在终端执行 `dirname $(which node)` 查看。",
+      sTextarea(g.extraPaths,"/Users/你/.nvm/versions/node/v20.11.0/bin\n/opt/homebrew/bin",
+        v=>g.extraPaths=v)));
   syncPath();
 }
 function renderPerf(box,c){
@@ -2866,6 +2933,13 @@ async function boot(){
     }
     if(target)openSession(target.id);
   }catch(e){$("#rootPath").textContent="加载失败";}
+  // 初始化"后端运行中"状态（SSE 重连后由服务端事件持续维护）
+  try{
+    const d=await(await fetch("/api/run/list")).json();
+    (d.procs||[]).forEach(p=>running.set(p.sid,
+      {pid:p.pid,agent:p.agent,cwd:p.cwd,prompt:p.prompt,startedAt:p.startedAt}));
+    if(curSummary)drawHeader();
+  }catch(_){}
   connectStream();
 }
 /* ── 新任务启动器 & 分享链接 —— 包 try/catch 防止解析期错误打断 boot ── */

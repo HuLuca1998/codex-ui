@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -152,6 +154,8 @@ func main() {
 	api("/api/fs/ls", fsLsHandler)
 	api("/api/fs/home", fsHomeHandler)
 	api("/api/run", runHandler)
+	api("/api/run/list", runListHandler)
+	api("/api/run/kill", runKillHandler)
 	api("/api/lan-url", lanURLHandler)
 	// 更新机制
 	api("/api/version", versionHandler)
@@ -161,6 +165,17 @@ func main() {
 	// 仓库设置：gh repos 下拉 + Finder 选目录
 	api("/api/gh/repos", ghReposHandler)
 	api("/api/folder/pick", folderPickHandler)
+	api("/api/open-in-editor", openInEditorHandler)
+
+	// SIGTERM/SIGINT：Swift 关 App 时 serverProcess.terminate() 走这里 —— 把
+	// 自己 spawn 的 claude/codex 子进程一并杀掉，避免留下永生孤儿吃 API 配额。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		killAllProcs()
+		os.Exit(0)
+	}()
 
 	// 启动更新检查后台轮询（version=="dev" 时跳过）
 	startUpdater()
@@ -419,8 +434,13 @@ func sendHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	go cmd.Wait() // 回收进程，不读取输出
-	writeJSON(w, map[string]any{"ok": true})
+	pid := cmd.Process.Pid
+	registerProc(&runProc{
+		Sid: sum.Sid, Agent: "codex", Cwd: sum.Cwd, Prompt: msg,
+		Pid: pid, StartedAt: time.Now().UnixMilli(), cmd: cmd,
+	})
+	go func() { cmd.Wait(); unregisterProc(sum.Sid, pid) }()
+	writeJSON(w, map[string]any{"ok": true, "pid": pid})
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
@@ -1091,6 +1111,7 @@ type GeneralConfig struct {
 	Browser     string `json:"browser"`     // chrome|safari|default|custom
 	BrowserPath string `json:"browserPath"` // custom 时的 .app 路径
 	Terminal    string `json:"terminal"`    // iterm|terminal|auto
+	ExtraPaths  string `json:"extraPaths"`  // 额外前置到 PATH 的目录（换行/冒号/逗号分隔）；用于让 ccusage 等找到 node/npx/claude
 }
 
 // PerfConfig 是扫描与性能相关配置。
@@ -1222,7 +1243,49 @@ func saveConfig(c Config) error {
 func reloadConfig() Config {
 	c := loadConfig()
 	cfgCache.Store(c)
+	applyExtraPaths(c.General.ExtraPaths) // 把用户配置的命令目录前置进 PATH
 	return c
+}
+
+// splitPathList 把用户输入的目录列表（换行 / 冒号 / 逗号 / 分号分隔）拆成干净的切片。
+func splitPathList(s string) []string {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ':' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// applyExtraPaths 把设置里配置的目录前置到进程 PATH（已存在的跳过，幂等）。
+// 用于解决 Dock 启动 PATH 贫瘠、nvm 等非默认前缀导致 ccusage 找不到 node/npx 的问题。
+func applyExtraPaths(extra string) {
+	dirs := splitPathList(extra)
+	if len(dirs) == 0 {
+		return
+	}
+	cur := os.Getenv("PATH")
+	have := map[string]bool{}
+	for _, p := range strings.Split(cur, ":") {
+		if p != "" {
+			have[p] = true
+		}
+	}
+	var prefix []string
+	for _, d := range dirs {
+		if !have[d] {
+			prefix = append(prefix, d)
+			have[d] = true
+		}
+	}
+	if len(prefix) == 0 {
+		return
+	}
+	os.Setenv("PATH", strings.Join(prefix, ":")+":"+cur)
 }
 
 // liveConfig 返回缓存的配置（不读盘）。
@@ -2018,20 +2081,95 @@ func rescanHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ghReposHandler 列出当前 gh 登录账号下的全部仓库（前端仓库设置下拉用）
+// 个人仓库 + 所属组织仓库一并返回，按 nameWithOwner 去重
 // 不要求 gh 登录态：未登录时返回 ok:false，前端降级到原文本输入
 func ghReposHandler(w http.ResponseWriter, r *http.Request) {
-	out, err := exec.Command("gh", "repo", "list", "--json",
-		"nameWithOwner,description,isPrivate", "--limit", "300").Output()
+	const fields = "nameWithOwner,description,isPrivate"
+	// listRepos 拉某个 owner（空 = 个人账号）下的仓库
+	listRepos := func(owner string) ([]map[string]any, error) {
+		args := []string{"repo", "list"}
+		if owner != "" {
+			args = append(args, owner)
+		}
+		args = append(args, "--json", fields, "--limit", "300")
+		out, err := exec.Command("gh", args...).Output()
+		if err != nil {
+			return nil, err
+		}
+		var arr []map[string]any
+		if jerr := json.Unmarshal(out, &arr); jerr != nil {
+			return nil, jerr
+		}
+		return arr, nil
+	}
+
+	personal, err := listRepos("")
 	if err != nil {
 		writeJSON(w, map[string]any{"ok": false, "error": "gh repo list 失败：" + err.Error()})
 		return
 	}
-	var arr []map[string]any
-	if jerr := json.Unmarshal(out, &arr); jerr != nil {
-		writeJSON(w, map[string]any{"ok": false, "error": "解析 gh 输出失败：" + jerr.Error()})
+	seen := map[string]bool{}
+	merged := make([]map[string]any, 0, len(personal))
+	add := func(arr []map[string]any) {
+		for _, rm := range arr {
+			name, _ := rm["nameWithOwner"].(string)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			merged = append(merged, rm)
+		}
+	}
+	add(personal)
+
+	// 枚举所属组织，逐个拉其仓库；失败不致命（无权限/网络），尽力而为
+	if out, oerr := exec.Command("gh", "api", "user/orgs", "--jq", ".[].login").Output(); oerr == nil {
+		for _, org := range strings.Fields(string(out)) {
+			if arr, lerr := listRepos(org); lerr == nil {
+				add(arr)
+			}
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true, "repos": merged})
+}
+
+// openInEditorHandler 用 VSCode 打开指定文件（macOS 走 `open -a "Visual Studio Code"`）。
+// 仅放行 ~/.codex/sessions 与 ~/.claude/projects 下的 .jsonl 文件，避免被当成任意启动器。
+func openInEditorHandler(w http.ResponseWriter, r *http.Request) {
+	p := strings.TrimSpace(r.URL.Query().Get("path"))
+	if p == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "缺少 path"})
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "repos": arr})
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	home, _ := os.UserHomeDir()
+	allowed := false
+	for _, root := range []string{
+		filepath.Join(home, ".codex", "sessions"),
+		filepath.Join(home, ".claude", "projects"),
+	} {
+		if strings.HasPrefix(abs, root+string(os.PathSeparator)) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed || !strings.HasSuffix(strings.ToLower(abs), ".jsonl") {
+		writeJSON(w, map[string]any{"ok": false, "error": "路径不在允许范围"})
+		return
+	}
+	if _, err := os.Stat(abs); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if err := exec.Command("open", "-a", "Visual Studio Code", abs).Start(); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "path": abs})
 }
 
 // folderPickHandler 调起 macOS 原生「选择文件夹」对话框，返回 POSIX 路径
@@ -2218,9 +2356,19 @@ func runHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "cmd": shellJoin(args)})
 		return
 	}
-	go cmd.Wait() // 回收僵尸
+	pid := cmd.Process.Pid
+	// resume 模式有 sid，登记到进程表 → 前端可见 + 可终止；new 模式 sid 未知，先不登记。
+	if req.Mode == "resume" && req.Sid != "" {
+		registerProc(&runProc{
+			Sid: req.Sid, Agent: req.Agent, Cwd: req.Cwd, Prompt: req.Prompt,
+			Pid: pid, StartedAt: time.Now().UnixMilli(), cmd: cmd,
+		})
+		go func() { cmd.Wait(); unregisterProc(req.Sid, pid) }()
+	} else {
+		go cmd.Wait() // 回收僵尸
+	}
 	pushRecentCwd(req.Cwd)
-	writeJSON(w, map[string]any{"ok": true, "pid": cmd.Process.Pid, "cmd": shellJoin(args)})
+	writeJSON(w, map[string]any{"ok": true, "pid": pid, "cmd": shellJoin(args)})
 }
 
 // buildRunArgs 把请求映射成 argv。
