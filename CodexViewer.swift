@@ -324,6 +324,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     let bg = NSColor(red: 0.027, green: 0.027, blue: 0.031, alpha: 1)
     var selectedTab: MenuTab = .issues   // 当前菜单标签页，跨次开合保留
     var menuData: MenubarResponse?       // 上次拉取的菜单数据，切标签复用
+    var pollTimer: Timer?                // 后台轮询 issue，驱动菜单栏红点
+    var hasNewIssues = false             // 当前是否存在未读新 issue（红点开关）
+    // 已看过的 issue（"<repo>#<number>"），持久化；打开菜单看过列表即视为已读。
+    var seenIssueKeys: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "SeenIssueKeys") ?? [])
 
     func applicationDidFinishLaunching(_ note: Notification) {
         startServer()
@@ -385,19 +390,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let btn = statusItem.button {
-            if let img = NSImage(systemSymbolName: "smallcircle.filled.circle",
-                                 accessibilityDescription: "我的 Issue") {
-                img.isTemplate = true
-                btn.image = img
-            } else {
-                btn.title = "◆"
-            }
-            btn.toolTip = "Codex Viewer — 我的 Issue"
-        }
+        statusItem.button?.toolTip = "Codex Viewer — 我的 Issue"
+        updateStatusIcon()
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        startIssuePolling()
+    }
+
+    // 根据 hasNewIssues 重绘菜单栏图标：无红点用模板符号（随菜单栏明暗自适应）；
+    // 有红点则合成「符号本体 + 右上角红点」的彩色图。
+    func updateStatusIcon() {
+        guard let btn = statusItem?.button else { return }
+        guard let base = NSImage(systemSymbolName: "smallcircle.filled.circle",
+                                 accessibilityDescription: "我的 Issue") else {
+            btn.title = hasNewIssues ? "◆ ●" : "◆"
+            return
+        }
+        if !hasNewIssues {
+            base.isTemplate = true
+            btn.image = base
+            return
+        }
+        let size = NSSize(width: 20, height: 16)
+        let img = NSImage(size: size)
+        img.lockFocus()
+        // 在菜单栏当前外观下绘制，使 labelColor 解析为正确的明/暗色
+        btn.effectiveAppearance.performAsCurrentDrawingAppearance {
+            // 符号本体：先按模板画出剪影，再用 labelColor 染色（浅色菜单栏→黑、深色→白）
+            let iconRect = NSRect(x: 0, y: 1, width: 14, height: 14)
+            base.isTemplate = true
+            base.draw(in: iconRect)
+            NSColor.labelColor.set()
+            iconRect.fill(using: .sourceAtop)
+            // 右上角红点
+            NSColor.systemRed.setFill()
+            NSBezierPath(ovalIn: NSRect(x: size.width - 6, y: size.height - 6,
+                                        width: 6, height: 6)).fill()
+        }
+        img.unlockFocus()
+        img.isTemplate = false   // 含红色，不能当模板（否则会被系统抹成单色）
+        btn.image = img
+    }
+
+    // 启动后台轮询：立刻拉一次，之后每 60s 拉一次 /api/menubar，重算红点。
+    func startIssuePolling() {
+        pollIssuesOnce()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.pollIssuesOnce()
+        }
+    }
+
+    // 后台拉取菜单数据并刷新红点（不弹菜单，仅更新图标）。
+    func pollIssuesOnce() {
+        DispatchQueue.global().async { [weak self] in
+            let data = self?.fetchMenubar()
+            DispatchQueue.main.async {
+                guard let self = self, let data = data else { return }
+                self.menuData = data
+                self.recomputeBadge()
+            }
+        }
+    }
+
+    // 比对当前 issue 与「已看过」集合：存在未见过的编号则亮红点。
+    func recomputeBadge() {
+        let cur = menuData?.issues ?? []
+        let isNew = cur.contains { !seenIssueKeys.contains("\($0.repo)#\($0.number)") }
+        if isNew != hasNewIssues {
+            hasNewIssues = isNew
+            updateStatusIcon()
+        }
+    }
+
+    // 用户打开菜单看过 issue 列表后：把当前全部 issue 记为已读，红点熄灭。
+    // seen 直接重置为「当前 open 全集」，已关闭的编号自动淘汰，集合不膨胀。
+    func markIssuesSeen() {
+        guard menuData?.issuesError == nil, let issues = menuData?.issues else { return }
+        seenIssueKeys = Set(issues.map { "\($0.repo)#\($0.number)" })
+        UserDefaults.standard.set(Array(seenIssueKeys), forKey: "SeenIssueKeys")
+        if hasNewIssues {
+            hasNewIssues = false
+            updateStatusIcon()
+        }
     }
 
     // 菜单行的统一宽度。
@@ -426,7 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             addInfoItem(menu, "无法连接到服务")
         } else {
             switch selectedTab {
-            case .issues:   buildIssues(menu)
+            case .issues:   buildIssues(menu); markIssuesSeen()
             case .prs:      buildPRs(menu)
             case .sessions: buildSessions(menu)
             }
