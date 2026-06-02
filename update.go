@@ -65,9 +65,25 @@ func (u *updateState) snapshot() map[string]any {
 		"assetUrl":  u.AssetURL,
 		"progress":  u.Progress,
 		"message":   u.Message,
-		"checkedAt": u.CheckedAt,
-		"current":   version,
+		"checkedAt":  u.CheckedAt,
+		"current":    version,
+		"currentUrl": currentTagURL(),
 	}
+}
+
+// currentTagURL 返回「当前运行版本」的 GitHub release tag 页面链接。
+// 注意要和 latest release 的 url 区分：前者跟着 current 版本走，后者永远是最新版。
+// dev 构建没有对应 tag，返回空串。
+func currentTagURL() string {
+	if version == "dev" || version == "" {
+		return ""
+	}
+	tag := version
+	// current 可能形如 "v0.1.7-3-gabcdef-dirty"，tag 取第一个 "-" 之前
+	if i := strings.Index(tag, "-"); i >= 0 {
+		tag = tag[:i]
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", githubOwner, githubRepo, tag)
 }
 
 func (u *updateState) set(fn func(*updateState)) {

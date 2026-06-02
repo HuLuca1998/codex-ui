@@ -2705,8 +2705,10 @@ function redrawUpdate(row){
       try{await fetch("/api/update/apply",{method:"POST"});}catch(e){}
     }));
   }
-  if(latest&&s.url){
-    actions.append(h("a",{href:s.url,target:"_blank",
+  // 优先指向「当前运行版本」的 tag 页面；没有（dev 构建）才回退到 latest release
+  const ghUrl=s.currentUrl||s.url;
+  if(ghUrl){
+    actions.append(h("a",{href:ghUrl,target:"_blank",
       class:"text-[11.5px] text-[#74747e] hover:text-accent transition self-center ml-2",
       text:"在 GitHub 查看 ↗"}));
   }
