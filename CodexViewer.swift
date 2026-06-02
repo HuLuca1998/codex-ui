@@ -466,7 +466,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // 用户打开菜单看过 issue 列表后：把当前全部 issue 记为已读，红点熄灭。
     // seen 直接重置为「当前 open 全集」，已关闭的编号自动淘汰，集合不膨胀。
     func markIssuesSeen() {
-        guard menuData?.issuesError == nil, let issues = menuData?.issues else { return }
+        // 注意：后端无错误时发的是空字符串 ""（非 nil），不能用 == nil 判断，
+        // 否则守卫永远失败、issue 永不标记已读、红点永不消失。
+        guard (menuData?.issuesError ?? "").isEmpty, let issues = menuData?.issues else { return }
         seenIssueKeys = Set(issues.map { "\($0.repo)#\($0.number)" })
         UserDefaults.standard.set(Array(seenIssueKeys), forKey: "SeenIssueKeys")
         if hasNewIssues {

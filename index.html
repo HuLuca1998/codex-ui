@@ -2689,6 +2689,11 @@ function redrawUpdate(row){
     try{await fetch("/api/update/check",{method:"POST"});}catch(e){}
   });
   actions.append(checkBtn);
+  // 独立「重启」：退出当前 App 再自动拉起（不依赖更新）
+  actions.append(sBtn("重启",false,async()=>{
+    if(!confirm("确认现在重启应用？\n（未保存的对话仍会保留在文件里。）"))return;
+    try{await fetch("/api/restart",{method:"POST"});}catch(e){}
+  }));
   if(s.status==="available"){
     actions.append(sBtn("下载更新",true,async()=>{
       try{await fetch("/api/update/download",{method:"POST"});}catch(e){}

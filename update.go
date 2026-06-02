@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -431,16 +432,24 @@ func unzipTo(zipPath, dest string) error {
 	return nil
 }
 
-// applyUpdate spawn 助手脚本然后退出当前进程，让脚本完成 mv/open。
-//
-// 进程结构：Swift App（NSApplication 持 .app）→ 内嵌 Go binary（这个进程）。
-// 真正需要让出 .app bundle 占用的是 Swift App，不是 Go。
-// 流程：
-//   1. 拿 PPID（Swift 进程的 pid）
-//   2. spawn 一次性 bash（新 session 脱离父进程组，避免 Swift 退出时被一起杀）
-//   3. Go 自己 os.Exit(0)，但 Swift 还在跑
-//   4. bash 用 osascript 让 Swift 优雅退出（→ NSApp.terminate → applicationWillTerminate）
-//   5. bash 等 PPID 真的死了再 mv + open；超时退路用 SIGKILL
+// appBundlePath 从当前可执行文件路径向上找含 .app 后缀的祖先目录。
+// 非 .app 运行（go run / dev）时返回空串。
+func appBundlePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dst := exe
+	for dst != "/" && !strings.HasSuffix(dst, ".app") {
+		dst = filepath.Dir(dst)
+	}
+	if strings.HasSuffix(dst, ".app") {
+		return dst
+	}
+	return ""
+}
+
+// applyUpdate 退出当前 App 并用下载好的新版替换后重启。
 func applyUpdate() error {
 	upd.mu.Lock()
 	src := upd.ReadyApp
@@ -448,18 +457,34 @@ func applyUpdate() error {
 	if src == "" {
 		return fmt.Errorf("尚未下载就绪")
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// 找 .app 根目录（向上找含 .app 后缀的祖先）
-	dst := exe
-	for dst != "/" && !strings.HasSuffix(dst, ".app") {
-		dst = filepath.Dir(dst)
-	}
-	if !strings.HasSuffix(dst, ".app") {
+	dst := appBundlePath()
+	if dst == "" {
 		return fmt.Errorf("当前不在 .app bundle 中运行，无法自动替换")
 	}
+	return spawnRelaunch(src, dst)
+}
+
+// restartApp 不做替换，纯粹退出当前 App 再重启（供「重启」按钮用）。
+func restartApp() error {
+	dst := appBundlePath()
+	if dst == "" {
+		return fmt.Errorf("当前不在 .app bundle 中运行，无法重启")
+	}
+	return spawnRelaunch("", dst)
+}
+
+// spawnRelaunch 写出并以「独立 session」spawn 一个一次性 bash 助手，
+// 然后让本 Go 进程退出。助手负责：等 Go 退出 → 优雅退 Swift 外壳 →
+// （可选）原地替换 .app → 重启。newApp 为空表示纯重启不替换。
+//
+// 进程结构：Swift App（NSApplication 持 .app）→ 内嵌 Go binary（本进程）。
+// 真正占住 .app bundle 的是 Swift App，所以必须连 Swift 一起退。
+//
+// 关键：助手必须脱离 Swift 的进程组/会话，否则 Swift 退出时会被一起带走。
+// macOS 没有 setsid 命令，过去用 `env setsid` 会静默失败（env 启动成功但
+// 找不到 setsid 立即退 127，bash 根本没跑）——这是更新/重启一直不生效的根因。
+// 现改用 Go 原生 SysProcAttr{Setsid:true}，由内核在 fork 后建新会话。
+func spawnRelaunch(newApp, dst string) error {
 	swiftPID := os.Getppid() // Swift App 的 PID — 真正的"父进程"
 	goPID := os.Getpid()
 
@@ -468,9 +493,9 @@ func applyUpdate() error {
 		return err
 	}
 	script := filepath.Join(dir, "apply.sh")
-	body := fmt.Sprintf(`#!/usr/bin/env bash
-# Codex Viewer 自动更新助手 —— 在 Swift App 退出后原地替换 .app 并重启
-# 由 Go 后端 spawn，本脚本以新 session 运行，独立于 Swift 进程组
+	body := fmt.Sprintf(`#!/bin/bash
+# Codex Viewer 重启/更新助手 —— 在 Swift App 退出后（可选替换）并重启
+# 由 Go 后端以独立 session spawn，独立于 Swift 进程组
 set -u
 
 GO_PID=%d
@@ -480,10 +505,10 @@ DST_APP=%q
 LOG=%q
 
 exec >>"$LOG" 2>&1
-echo "=== $(date '+%%F %%T') apply.sh 启动 ==="
+echo "=== $(date '+%%F %%T') 助手启动（NEW_APP='$NEW_APP'）==="
 echo "Go PID=$GO_PID  Swift PID=$SWIFT_PID"
 
-# 1) Go 子进程会自己 os.Exit；等它消失
+# 1) Go 子进程会自己 os.Exit；等它消失（最多 5s）
 for i in $(seq 1 50); do
   kill -0 "$GO_PID" 2>/dev/null || break
   sleep 0.1
@@ -493,55 +518,56 @@ done
 #    用 bundle id 比 display name 稳定
 osascript -e 'tell application id "com.local.codexviewer" to quit' 2>/dev/null || true
 
-# 3) 等 Swift 真死（最多 5 秒），死透前不能动 .app bundle
-for i in $(seq 1 50); do
+# 3) 等 Swift 真死（最多 10 秒），死透前不能动 .app bundle
+for i in $(seq 1 100); do
   kill -0 "$SWIFT_PID" 2>/dev/null || break
   sleep 0.1
 done
 # 顽固：强杀
 if kill -0 "$SWIFT_PID" 2>/dev/null; then
-  echo "Swift 没在 5s 内退，强杀"
+  echo "Swift 没在 10s 内退，强杀"
   kill -KILL "$SWIFT_PID" 2>/dev/null || true
   sleep 0.5
 fi
 
-# 4) 替换：先 mv 旧的到临时名（容错）再 mv 新的到原位
-TRASH_DIR="$(dirname "$DST_APP")/.codex-viewer-old-$$"
-if ! mv "$DST_APP" "$TRASH_DIR" 2>/dev/null; then
-  # 可能是 /Applications 下权限不足；退路：rm -rf
-  rm -rf "$DST_APP" 2>/dev/null || true
+# 4) 仅当有新版时才替换；纯重启跳过这一段
+if [ -n "$NEW_APP" ]; then
+  TRASH_DIR="$(dirname "$DST_APP")/.codex-viewer-old-$$"
+  if ! mv "$DST_APP" "$TRASH_DIR" 2>/dev/null; then
+    # 可能是权限不足；退路：rm -rf
+    rm -rf "$DST_APP" 2>/dev/null || true
+  fi
+  if ! mv "$NEW_APP" "$DST_APP" 2>/dev/null; then
+    # 跨卷 mv 会失败，退路用 ditto 复制（保留 bundle 元数据）
+    if ! ditto "$NEW_APP" "$DST_APP" 2>/dev/null; then
+      echo "✗ 替换失败：$NEW_APP → $DST_APP"
+      # 还原旧 app（如果还在 trash 里）
+      [ -d "$TRASH_DIR" ] && mv "$TRASH_DIR" "$DST_APP" 2>/dev/null || true
+      open "$DST_APP" 2>/dev/null || true
+      exit 1
+    fi
+  fi
+  xattr -cr "$DST_APP" 2>/dev/null || true
+  rm -rf "$TRASH_DIR" 2>/dev/null || true
+  # 刷新 Launch Services 缓存（避免 Finder 还认旧版本签名）
+  /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$DST_APP" 2>/dev/null || true
 fi
-if ! mv "$NEW_APP" "$DST_APP"; then
-  echo "✗ mv 失败：$NEW_APP → $DST_APP"
-  # 还原旧 app（如果还在 trash 里）
-  [ -d "$TRASH_DIR" ] && mv "$TRASH_DIR" "$DST_APP" 2>/dev/null || true
-  open "$DST_APP" 2>/dev/null || true
-  exit 1
-fi
-xattr -cr "$DST_APP" 2>/dev/null || true
-rm -rf "$TRASH_DIR" 2>/dev/null || true
 
-# 5) 刷新 Launch Services 缓存（避免 Finder 还认旧版本签名）
-/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f "$DST_APP" 2>/dev/null || true
-
-# 6) 起新 app
-open "$DST_APP"
-echo "=== $(date '+%%F %%T') apply.sh 完成 ==="
-`, goPID, swiftPID, src, dst, filepath.Join(dir, "apply.log"))
+# 5) 起新 app（用 -n 确保拉起全新实例）
+open -n "$DST_APP"
+echo "=== $(date '+%%F %%T') 助手完成 ==="
+`, goPID, swiftPID, newApp, dst, filepath.Join(dir, "apply.log"))
 	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
 		return err
 	}
-	// 用 setsid 脱离当前进程组 + 重定向 std* 到 /dev/null，Swift 退出时不会被连带杀
-	cmd := exec.Command("/usr/bin/env", "setsid", "/bin/bash", script)
+	// 以独立 session spawn，脱离 Swift 进程组；std* 全部置空避免持有句柄。
+	cmd := exec.Command("/bin/bash", script)
+	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		// setsid 不可用时退路：直接 bash（macOS 自带 setsid，理论不会走到）
-		cmd = exec.Command("/bin/bash", script)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
+		return err
 	}
 	// 给前端 SSE 一点时间送达，再退；Swift 后续由 osascript 收到 AppleEvent 退出
 	go func() {
@@ -580,6 +606,15 @@ func updateDownloadHandler(w http.ResponseWriter, r *http.Request) {
 
 func updateApplyHandler(w http.ResponseWriter, r *http.Request) {
 	if err := applyUpdate(); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// restartHandler 退出当前 App 并重启（不做版本替换）。
+func restartHandler(w http.ResponseWriter, r *http.Request) {
+	if err := restartApp(); err != nil {
 		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

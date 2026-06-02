@@ -162,6 +162,7 @@ func main() {
 	api("/api/update/check", updateCheckHandler)
 	api("/api/update/download", updateDownloadHandler)
 	api("/api/update/apply", updateApplyHandler)
+	api("/api/restart", restartHandler)
 	// 仓库设置：gh repos 下拉 + Finder 选目录
 	api("/api/gh/repos", ghReposHandler)
 	api("/api/folder/pick", folderPickHandler)
