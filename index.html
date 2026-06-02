@@ -2647,6 +2647,8 @@ function renderStartup(box,c){
     sField("开机自启动",null,sToggle(s.launchAtLogin,v=>s.launchAtLogin=v)),
     sField("启动时打开主窗口","关 = 仅驻留菜单栏后台。",
       sToggle(s.openWindowOnLaunch,v=>s.openWindowOnLaunch=v)),
+    sField("新 issue / PR 系统通知","关注仓库出现新 issue 或 PR 时弹 macOS 通知；点击通知打开对应页面。",
+      sToggle(s.notifyOnNewItems!==false,v=>s.notifyOnNewItems=v)),
     sField("关闭窗口时",null,sSelect(s.onWindowClose,[
       {v:"background",t:"转入菜单栏后台"},{v:"quit",t:"退出 App"}],
       v=>s.onWindowClose=v)));

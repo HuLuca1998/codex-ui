@@ -1127,7 +1127,8 @@ type PerfConfig struct {
 type StartupConfig struct {
 	LaunchAtLogin      bool   `json:"launchAtLogin"`
 	OpenWindowOnLaunch bool   `json:"openWindowOnLaunch"`
-	OnWindowClose      string `json:"onWindowClose"` // background|quit
+	OnWindowClose      string `json:"onWindowClose"`    // background|quit
+	NotifyOnNewItems   bool   `json:"notifyOnNewItems"` // 有新 issue/PR 时发系统通知
 }
 
 // RecentConfig 跟踪 web 启动 CLI 时用过的工作目录，做下拉快捷。
@@ -1163,7 +1164,7 @@ func defaultConfig() Config {
 		Issue:   IssueConfig{Assignee: "@me", State: "open", Limit: 50, RefreshMinutes: 3, MenuMax: 20, ShowInMenu: true, DetailCmd: defIssueDetail},
 		General: GeneralConfig{Browser: "chrome", Terminal: "iterm"},
 		Perf:    PerfConfig{ScanIntervalMs: 800, DetailBudget: 6 << 20, DetailMaxN: 6000, ActiveWindowSec: 90},
-		Startup: StartupConfig{OpenWindowOnLaunch: true, OnWindowClose: "background"},
+		Startup: StartupConfig{OpenWindowOnLaunch: true, OnWindowClose: "background", NotifyOnNewItems: true},
 	}
 }
 
@@ -1634,6 +1635,7 @@ type Issue struct {
 	URL       string  `json:"url"`
 	Labels    []Label `json:"labels"`
 	UpdatedAt string  `json:"updatedAt"`
+	Comments  int     `json:"comments"` // 评论数，用于检测新增评论
 }
 
 var (
@@ -1648,7 +1650,7 @@ var (
 // 经登录 shell 运行以取得完整 PATH（gh 通常在 /opt/homebrew/bin）。
 func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
 	args := []string{"issue", "list", "--repo", repo,
-		"--json", "number,title,labels,updatedAt,url"}
+		"--json", "number,title,labels,updatedAt,url,comments"}
 	if ic.State != "" {
 		args = append(args, "--state", ic.State)
 	}
@@ -1676,11 +1678,12 @@ func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
 		return nil, fmt.Errorf("%s", msg)
 	}
 	var raw []struct {
-		Number    int     `json:"number"`
-		Title     string  `json:"title"`
-		URL       string  `json:"url"`
-		UpdatedAt string  `json:"updatedAt"`
-		Labels    []Label `json:"labels"`
+		Number    int               `json:"number"`
+		Title     string            `json:"title"`
+		URL       string            `json:"url"`
+		UpdatedAt string            `json:"updatedAt"`
+		Labels    []Label           `json:"labels"`
+		Comments  []json.RawMessage `json:"comments"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, err
@@ -1689,7 +1692,7 @@ func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
 	for _, r := range raw {
 		list = append(list, Issue{
 			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
-			Labels: r.Labels, UpdatedAt: r.UpdatedAt,
+			Labels: r.Labels, UpdatedAt: r.UpdatedAt, Comments: len(r.Comments),
 		})
 	}
 	return list, nil
@@ -1737,7 +1740,8 @@ type PR struct {
 	UpdatedAt string  `json:"updatedAt"`
 	Author    string  `json:"author"`
 	IsDraft   bool    `json:"isDraft"`
-	Reason    string  `json:"reason"` // author（我创建）| review（待我 review）
+	Reason    string  `json:"reason"`   // author（我创建）| review（待我 review）
+	Comments  int     `json:"comments"` // 评论数，用于检测新增评论
 }
 
 var (
@@ -1751,7 +1755,7 @@ var (
 // author / search 非空时分别作为 --author / --search 条件。
 func ghPRList(repo, author, search string, limit int) ([]PR, error) {
 	args := []string{"pr", "list", "--repo", repo, "--state", "open",
-		"--json", "number,title,labels,updatedAt,url,author,isDraft"}
+		"--json", "number,title,labels,updatedAt,url,author,isDraft,comments"}
 	if author != "" {
 		args = append(args, "--author", author)
 	}
@@ -1773,12 +1777,13 @@ func ghPRList(repo, author, search string, limit int) ([]PR, error) {
 		return nil, fmt.Errorf("%s", msg)
 	}
 	var raw []struct {
-		Number    int     `json:"number"`
-		Title     string  `json:"title"`
-		URL       string  `json:"url"`
-		UpdatedAt string  `json:"updatedAt"`
-		IsDraft   bool    `json:"isDraft"`
-		Labels    []Label `json:"labels"`
+		Number    int               `json:"number"`
+		Title     string            `json:"title"`
+		URL       string            `json:"url"`
+		UpdatedAt string            `json:"updatedAt"`
+		IsDraft   bool              `json:"isDraft"`
+		Labels    []Label           `json:"labels"`
+		Comments  []json.RawMessage `json:"comments"`
 		Author    struct {
 			Login string `json:"login"`
 		} `json:"author"`
@@ -1791,7 +1796,7 @@ func ghPRList(repo, author, search string, limit int) ([]PR, error) {
 		list = append(list, PR{
 			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
 			Labels: r.Labels, UpdatedAt: r.UpdatedAt,
-			Author: r.Author.Login, IsDraft: r.IsDraft,
+			Author: r.Author.Login, IsDraft: r.IsDraft, Comments: len(r.Comments),
 		})
 	}
 	return list, nil

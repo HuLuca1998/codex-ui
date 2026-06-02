@@ -24,7 +24,7 @@ echo "  ◆ 编译后端服务 (Go) ..."
 go build -ldflags "-s -w -X main.version=$VERSION" -o "$TMP/codex-ui" .
 
 echo "  ◆ 编译原生窗口 (Swift / WKWebView) ..."
-swiftc -O -o "$TMP/CodexViewer" CodexViewer.swift -framework Cocoa -framework WebKit
+swiftc -O -o "$TMP/CodexViewer" CodexViewer.swift -framework Cocoa -framework WebKit -framework UserNotifications
 
 echo "  ◆ 渲染应用图标 ..."
 swiftc -O -o "$TMP/mkicon" makeicon.swift -framework Cocoa

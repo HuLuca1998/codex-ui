@@ -3,6 +3,7 @@
 // 内置的 Go 服务作为子进程提供数据与界面。
 import Cocoa
 import ServiceManagement
+import UserNotifications
 import WebKit
 
 // 端口文件：Go 服务启动后写入实际端口，供本程序读取。
@@ -65,6 +66,7 @@ struct IssueItem: Decodable {
     let title: String
     let url: String
     let labels: [IssueLabel]?
+    let comments: Int?
 }
 // /api/menubar 返回的单条 pull request。
 struct PRItem: Decodable {
@@ -76,6 +78,7 @@ struct PRItem: Decodable {
     let author: String?
     let isDraft: Bool?
     let reason: String?   // author（我创建）| review（待我 review）
+    let comments: Int?
 }
 // /api/menubar 返回的单条活跃会话。
 struct SessionItem: Decodable {
@@ -107,6 +110,17 @@ struct StartupCfg: Decodable {
     let launchAtLogin: Bool?
     let openWindowOnLaunch: Bool?
     let onWindowClose: String?
+    let notifyOnNewItems: Bool?
+}
+
+// 一条待发通知的素材（issue 或 PR 归一化后）。
+struct NotifyEntry {
+    let key: String          // "i:repo#n" / "p:repo#n"，评论数基线的键
+    let comments: Int
+    let newTitle: String     // 作为「新条目」时的通知标题
+    let commentTitle: String // 作为「新评论」时的通知标题
+    let body: String
+    let url: String
 }
 struct AppConfig: Decodable {
     let general: GeneralCfg?
@@ -316,7 +330,7 @@ final class SessionRowView: HoverRowView {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate,
-                         NSMenuDelegate, NSWindowDelegate {
+                         NSMenuDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     var window: NSWindow!
     var webView: WKWebView!
     var statusItem: NSStatusItem!
@@ -329,6 +343,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // 已看过的 issue（"<repo>#<number>"），持久化；打开菜单看过列表即视为已读。
     var seenIssueKeys: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: "SeenIssueKeys") ?? [])
+    // ── 系统通知状态 ──
+    var notifyEnabled = true              // 设置开关：有新 issue/PR 时发系统通知（由 config 刷新）
+    var notifyAuthorized = false          // 是否已拿到系统通知授权
+    // 各侧首轮拉取仅建立基线（静默），避免启动把存量条目刷屏；两侧独立，
+    // 一侧 gh 报错不影响另一侧。
+    var issueBaselineDone = false
+    var prBaselineDone = false
+    // 每个 issue/PR 的评论数基线（key："i:repo#n" / "p:repo#n"），不持久化。
+    // 基线没有的 key = 新条目；评论数比基线大 = 新评论。每轮重建以淘汰已关闭项。
+    var commentBaseline = [String: Int]()
 
     func applicationDidFinishLaunching(_ note: Notification) {
         startServer()
@@ -395,7 +419,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        setupNotifications()
         startIssuePolling()
+    }
+
+    // 申请系统通知授权，并接管通知中心回调（前台展示 / 点击打开链接）。
+    func setupNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
+            DispatchQueue.main.async { self?.notifyAuthorized = granted }
+        }
     }
 
     // 根据 hasNewIssues 重绘菜单栏图标：无红点用模板符号（随菜单栏明暗自适应）；
@@ -449,6 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 guard let self = self, let data = data else { return }
                 self.menuData = data
                 self.recomputeBadge()
+                self.maybeNotifyNewItems()
             }
         }
     }
@@ -461,6 +496,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             hasNewIssues = isNew
             updateStatusIcon()
         }
+    }
+
+    // 比对最新数据与评论数基线，发系统通知：基线里没有的条目 → 「新 issue/PR」；
+    // 评论数比基线大 → 「新评论」。issue 与 PR 两侧各自独立处理（某侧 gh 报错时跳过该侧）。
+    func maybeNotifyNewItems() {
+        if (menuData?.issuesError ?? "").isEmpty, let issues = menuData?.issues {
+            let entries = issues.map { it in
+                NotifyEntry(key: "i:\(it.repo)#\(it.number)", comments: it.comments ?? 0,
+                            newTitle: "新 issue · \(it.repo)",
+                            commentTitle: "issue 新评论 · \(it.repo)",
+                            body: "#\(it.number) \(it.title)", url: it.url)
+            }
+            processNotifySide(prefix: "i:", silent: !issueBaselineDone, entries: entries)
+            issueBaselineDone = true
+        }
+        if (menuData?.prsError ?? "").isEmpty, let prs = menuData?.prs {
+            let entries = prs.map { pr -> NotifyEntry in
+                let review = (pr.reason == "review")
+                return NotifyEntry(key: "p:\(pr.repo)#\(pr.number)", comments: pr.comments ?? 0,
+                            newTitle: review ? "待你 review 的 PR · \(pr.repo)" : "新 PR · \(pr.repo)",
+                            commentTitle: "PR 新评论 · \(pr.repo)",
+                            body: "#\(pr.number) \(pr.title)", url: pr.url)
+            }
+            processNotifySide(prefix: "p:", silent: !prBaselineDone, entries: entries)
+            prBaselineDone = true
+        }
+    }
+
+    // 重建某一前缀的评论数基线，并按需发通知。muted（首轮 / 开关关 / 未授权）时
+    // 只更新基线、不发通知 —— 这样开关重开后不会把存量条目当成新的刷屏。
+    func processNotifySide(prefix: String, silent: Bool, entries: [NotifyEntry]) {
+        let muted = silent || !notifyEnabled || !notifyAuthorized
+        var rebuilt = commentBaseline.filter { !$0.key.hasPrefix(prefix) }
+        for e in entries {
+            let prev = commentBaseline[e.key]
+            rebuilt[e.key] = e.comments
+            if muted { continue }
+            if prev == nil {
+                postNotify(id: "\(e.key):new", title: e.newTitle, body: e.body, url: e.url)
+            } else if e.comments > prev! {
+                postNotify(id: "\(e.key):c\(e.comments)", title: e.commentTitle, body: e.body, url: e.url)
+            }
+        }
+        commentBaseline = rebuilt
+    }
+
+    // 投递一条系统通知；userInfo 带 url，点击时打开对应 GitHub 页面。
+    func postNotify(id: String, title: String, body: String, url: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if !url.isEmpty { content.userInfo = ["url": url] }
+        let req = UNNotificationRequest(identifier: id, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    // 前台运行时也展示通知横幅（默认前台会被系统吞掉）。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler:
+                                    @escaping (UNNotificationPresentationOptions) -> Void) {
+        if #available(macOS 11.0, *) { completionHandler([.banner, .sound]) }
+        else { completionHandler([.alert, .sound]) }
+    }
+
+    // 点击通知 → 打开 userInfo 里的 GitHub 链接。
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let url = response.notification.request.content.userInfo["url"] as? String {
+            DispatchQueue.main.async { [weak self] in self?.openIssueLink(url) }
+        }
+        completionHandler()
     }
 
     // 用户打开菜单看过 issue 列表后：把当前全部 issue 记为已读，红点熄灭。
@@ -742,7 +851,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     // 按配置同步「开机自启动」登录项（macOS 13+）。
     func applyStartupConfig(_ s: StartupCfg?) {
-        guard let s = s, #available(macOS 13.0, *) else { return }
+        guard let s = s else { return }
+        // 通知开关随配置刷新（默认开）；这一步不依赖系统版本，放在登录项之前。
+        notifyEnabled = s.notifyOnNewItems ?? true
+        guard #available(macOS 13.0, *) else { return }
         let want = s.launchAtLogin ?? false
         let svc = SMAppService.mainApp
         let isOn = svc.status == .enabled
