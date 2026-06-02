@@ -821,6 +821,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
+    // ── JS 原生对话框 ──────────────────────────────────────────
+    // WKWebView 默认不弹 alert/confirm/prompt：必须实现这些回调，否则
+    // confirm() 直接返回 false、alert() 静默丢弃。后果是前端所有
+    // `if(!confirm())return` 的按钮（重启 / 重启应用 / 终止会话）点了毫无反应。
+    // 用 runModal（应用级模态）保证在窗口任意可见状态下都能弹出。
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping () -> Void) {
+        let a = NSAlert()
+        a.messageText = "Codex Viewer"
+        a.informativeText = message
+        a.addButton(withTitle: "好")
+        a.runModal()
+        completionHandler()
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (Bool) -> Void) {
+        let a = NSAlert()
+        a.messageText = "Codex Viewer"
+        a.informativeText = message
+        a.addButton(withTitle: "确定")
+        a.addButton(withTitle: "取消")
+        completionHandler(a.runModal() == .alertFirstButtonReturn)
+    }
+
+    func webView(_ webView: WKWebView,
+                 runJavaScriptTextInputPanelWithPrompt prompt: String,
+                 defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping (String?) -> Void) {
+        let a = NSAlert()
+        a.messageText = prompt
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        tf.stringValue = defaultText ?? ""
+        a.accessoryView = tf
+        a.addButton(withTitle: "确定")
+        a.addButton(withTitle: "取消")
+        completionHandler(a.runModal() == .alertFirstButtonReturn ? tf.stringValue : nil)
+    }
+
     private func isExternal(_ url: URL) -> Bool {
         let scheme = url.scheme?.lowercased() ?? ""
         guard scheme == "http" || scheme == "https" else { return false }
