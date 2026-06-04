@@ -167,6 +167,10 @@ func main() {
 	api("/api/gh/repos", ghReposHandler)
 	api("/api/folder/pick", folderPickHandler)
 	api("/api/open-in-editor", openInEditorHandler)
+	// GitHub 模块页面：按 state 实时查询 issue / PR + 正文评论详情
+	api("/api/gh/issues", ghPageIssuesHandler)
+	api("/api/gh/prs", ghPagePRsHandler)
+	api("/api/gh/detail", ghDetailHandler)
 
 	// SIGTERM/SIGINT：Swift 关 App 时 serverProcess.terminate() 走这里 —— 把
 	// 自己 spawn 的 claude/codex 子进程一并杀掉，避免留下永生孤儿吃 API 配额。
@@ -1846,6 +1850,345 @@ func refreshPRs() {
 	prsAt = time.Now()
 	prsErr = strings.Join(errs, " · ")
 	prsMu.Unlock()
+}
+
+// ── GitHub 模块页面 API ─────────────────────────────────────
+// 与菜单栏缓存（issues / prs）相互独立：页面按用户选择的 state / 筛选「实时」
+// 查询，这样「已关闭 / 已合并」的历史记录无需常驻后台轮询。
+
+// GHItem 是 GitHub 页面用的 issue / PR 统一条目。
+type GHItem struct {
+	Repo      string  `json:"repo"`
+	Number    int     `json:"number"`
+	Title     string  `json:"title"`
+	URL       string  `json:"url"`
+	Labels    []Label `json:"labels"`
+	UpdatedAt string  `json:"updatedAt"`
+	State     string  `json:"state"`   // OPEN / CLOSED / MERGED
+	Author    string  `json:"author"`
+	IsDraft   bool    `json:"isDraft"`  // 仅 PR
+	Reason    string  `json:"reason"`   // 仅 PR：author（我创建）/ review（待我 review）
+	Comments  int     `json:"comments"`
+}
+
+// ghJSON 经登录 shell 跑一条 gh 命令并返回 stdout（取得完整 PATH）。
+func ghJSON(args []string) ([]byte, error) {
+	cmd := exec.Command("/bin/zsh", "-lc", "gh "+shellJoin(args))
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return out, nil
+}
+
+// repoAllowed 判断 repo 是否在配置里（防命令注入 / 越权查询）。
+func repoAllowed(repo string) bool {
+	if strings.TrimSpace(repo) == "" {
+		return false
+	}
+	for _, rm := range liveConfig().Repos {
+		if rm.Repo == repo {
+			return true
+		}
+	}
+	return false
+}
+
+// ghQueryIssues 按 state / assignee 实时拉取某仓库 issue。
+func ghQueryIssues(repo, state, assignee string, limit int) ([]GHItem, error) {
+	if state == "" {
+		state = "open"
+	}
+	args := []string{"issue", "list", "--repo", repo, "--state", state,
+		"--json", "number,title,labels,updatedAt,url,comments,state,author"}
+	if strings.TrimSpace(assignee) != "" {
+		args = append(args, "--assignee", assignee)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, "--limit", strconv.Itoa(limit))
+	out, err := ghJSON(args)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Number    int               `json:"number"`
+		Title     string            `json:"title"`
+		URL       string            `json:"url"`
+		UpdatedAt string            `json:"updatedAt"`
+		State     string            `json:"state"`
+		Labels    []Label           `json:"labels"`
+		Comments  []json.RawMessage `json:"comments"`
+		Author    struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	list := make([]GHItem, 0, len(raw))
+	for _, r := range raw {
+		list = append(list, GHItem{
+			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
+			Labels: r.Labels, UpdatedAt: r.UpdatedAt, State: strings.ToUpper(r.State),
+			Author: r.Author.Login, Comments: len(r.Comments),
+		})
+	}
+	return list, nil
+}
+
+// ghQueryPRItems 调 gh pr list 拉取某仓库 PR（附带 state 字段）。
+func ghQueryPRItems(repo, author, search, state string, limit int) ([]GHItem, error) {
+	if state == "" {
+		state = "open"
+	}
+	args := []string{"pr", "list", "--repo", repo, "--state", state,
+		"--json", "number,title,labels,updatedAt,url,author,isDraft,comments,state"}
+	if author != "" {
+		args = append(args, "--author", author)
+	}
+	if search != "" {
+		args = append(args, "--search", search)
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args = append(args, "--limit", strconv.Itoa(limit))
+	out, err := ghJSON(args)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		Number    int               `json:"number"`
+		Title     string            `json:"title"`
+		URL       string            `json:"url"`
+		UpdatedAt string            `json:"updatedAt"`
+		State     string            `json:"state"`
+		IsDraft   bool              `json:"isDraft"`
+		Labels    []Label           `json:"labels"`
+		Comments  []json.RawMessage `json:"comments"`
+		Author    struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	list := make([]GHItem, 0, len(raw))
+	for _, r := range raw {
+		list = append(list, GHItem{
+			Repo: repo, Number: r.Number, Title: r.Title, URL: r.URL,
+			Labels: r.Labels, UpdatedAt: r.UpdatedAt, State: strings.ToUpper(r.State),
+			Author: r.Author.Login, IsDraft: r.IsDraft, Comments: len(r.Comments),
+		})
+	}
+	return list, nil
+}
+
+// ghQueryPRs 拉取某仓库「我相关」的 PR：open 时合并「我创建 + 待我 review」两路；
+// merged / closed / all 时聚焦「我创建的」（review-requested 对历史 PR 无意义）。
+func ghQueryPRs(repo, state string, limit int) ([]GHItem, error) {
+	if state == "" || state == "open" {
+		mine, e1 := ghQueryPRItems(repo, "@me", "", "open", limit)
+		rev, e2 := ghQueryPRItems(repo, "", "review-requested:@me", "open", limit)
+		if e1 != nil && e2 != nil {
+			return nil, e1
+		}
+		seen := map[int]bool{}
+		out := make([]GHItem, 0, len(mine)+len(rev))
+		for _, p := range mine {
+			p.Reason = "author"
+			seen[p.Number] = true
+			out = append(out, p)
+		}
+		for _, p := range rev {
+			if seen[p.Number] {
+				continue
+			}
+			p.Reason = "review"
+			out = append(out, p)
+		}
+		return out, nil
+	}
+	items, err := ghQueryPRItems(repo, "@me", "", state, limit)
+	for i := range items {
+		items[i].Reason = "author"
+	}
+	return items, err
+}
+
+// ── GitHub 页面查询缓存 ─────────────────────────────────────
+// 命中即返回（哪怕过期），过期则后台异步刷新供下次取用，实现「先给旧数据
+// 秒开、后台补新」；只有首次无缓存时才同步等待 gh，避免每次切页签干等。
+
+type ghCacheEntry struct {
+	items  []GHItem
+	repos  []string
+	errStr string
+	at     time.Time
+}
+
+var (
+	ghCacheMu      sync.Mutex
+	ghCacheData    = map[string]ghCacheEntry{}
+	ghCacheRunning = map[string]bool{}
+)
+
+const ghCacheTTL = 60 * time.Second
+
+// ghServe 统一「缓存优先」逻辑：compute 真正执行 gh 查询。
+func ghServe(w http.ResponseWriter, key string, force bool, compute func() ([]GHItem, []string, string)) {
+	if force {
+		ghCacheMu.Lock()
+		delete(ghCacheData, key)
+		ghCacheMu.Unlock()
+	}
+	ghCacheMu.Lock()
+	ent, ok := ghCacheData[key]
+	ghCacheMu.Unlock()
+	if ok {
+		stale := time.Since(ent.at) >= ghCacheTTL
+		writeJSON(w, map[string]any{"items": ent.items, "repos": ent.repos,
+			"error": ent.errStr, "cachedAt": ent.at.UnixMilli(), "stale": stale})
+		if stale {
+			ghRefreshAsync(key, compute)
+		}
+		return
+	}
+	items, repos, errStr := compute()
+	now := time.Now()
+	ghCacheMu.Lock()
+	ghCacheData[key] = ghCacheEntry{items: items, repos: repos, errStr: errStr, at: now}
+	ghCacheMu.Unlock()
+	writeJSON(w, map[string]any{"items": items, "repos": repos, "error": errStr,
+		"cachedAt": now.UnixMilli(), "stale": false})
+}
+
+// ghRefreshAsync 后台刷新某 key 缓存（同 key 只跑一个，避免并发 gh 风暴）。
+func ghRefreshAsync(key string, compute func() ([]GHItem, []string, string)) {
+	ghCacheMu.Lock()
+	if ghCacheRunning[key] {
+		ghCacheMu.Unlock()
+		return
+	}
+	ghCacheRunning[key] = true
+	ghCacheMu.Unlock()
+	go func() {
+		items, repos, errStr := compute()
+		ghCacheMu.Lock()
+		ghCacheData[key] = ghCacheEntry{items: items, repos: repos, errStr: errStr, at: time.Now()}
+		ghCacheRunning[key] = false
+		ghCacheMu.Unlock()
+	}()
+}
+
+// ghPageIssuesHandler 遍历关注仓库拉取 issue，?state=open|closed|all、?mine=1、?refresh=1。
+func ghPageIssuesHandler(w http.ResponseWriter, r *http.Request) {
+	state := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("state")))
+	switch state {
+	case "open", "closed", "all":
+	default:
+		state = "open"
+	}
+	assignee := ""
+	if r.URL.Query().Get("mine") != "" {
+		assignee = "@me"
+	}
+	limit := liveConfig().Issue.Limit
+	compute := func() ([]GHItem, []string, string) {
+		items := []GHItem{}
+		repos := []string{}
+		var errs []string
+		for _, rm := range watchedRepos() {
+			repos = append(repos, rm.Repo)
+			got, err := ghQueryIssues(rm.Repo, state, assignee, limit)
+			if err != nil {
+				errs = append(errs, rm.Repo+": "+err.Error())
+				continue
+			}
+			items = append(items, got...)
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt > items[j].UpdatedAt })
+		return items, repos, strings.Join(errs, " · ")
+	}
+	ghServe(w, "i|"+state+"|"+assignee, r.URL.Query().Get("refresh") != "", compute)
+}
+
+// ghPagePRsHandler 遍历关注仓库拉取 PR，?state=open|merged|closed|all、?refresh=1。
+func ghPagePRsHandler(w http.ResponseWriter, r *http.Request) {
+	state := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("state")))
+	switch state {
+	case "open", "merged", "closed", "all":
+	default:
+		state = "open"
+	}
+	limit := liveConfig().Issue.Limit
+	compute := func() ([]GHItem, []string, string) {
+		items := []GHItem{}
+		repos := []string{}
+		var errs []string
+		for _, rm := range watchedRepos() {
+			repos = append(repos, rm.Repo)
+			got, err := ghQueryPRs(rm.Repo, state, limit)
+			if err != nil {
+				errs = append(errs, rm.Repo+": "+err.Error())
+				continue
+			}
+			items = append(items, got...)
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt > items[j].UpdatedAt })
+		return items, repos, strings.Join(errs, " · ")
+	}
+	ghServe(w, "p|"+state, r.URL.Query().Get("refresh") != "", compute)
+}
+
+// ghDetailHandler 返回单条 issue / PR 的正文与评论（?type=issue|pr&repo=&number=）。
+func ghDetailHandler(w http.ResponseWriter, r *http.Request) {
+	repo := strings.TrimSpace(r.URL.Query().Get("repo"))
+	number := strings.TrimSpace(r.URL.Query().Get("number"))
+	if !repoAllowed(repo) {
+		writeJSON(w, map[string]any{"ok": false, "error": "未知仓库"})
+		return
+	}
+	if _, err := strconv.Atoi(number); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "编号非法"})
+		return
+	}
+	sub := "issue"
+	if r.URL.Query().Get("type") == "pr" {
+		sub = "pr"
+	}
+	out, err := ghJSON([]string{sub, "view", number, "--repo", repo, "--json", "body,comments"})
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	var raw struct {
+		Body     string `json:"body"`
+		Comments []struct {
+			Body      string `json:"body"`
+			CreatedAt string `json:"createdAt"`
+			Author    struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	cs := make([]map[string]any, 0, len(raw.Comments))
+	for _, c := range raw.Comments {
+		cs = append(cs, map[string]any{"author": c.Author.Login, "body": c.Body, "createdAt": c.CreatedAt})
+	}
+	writeJSON(w, map[string]any{"ok": true, "body": raw.Body, "comments": cs})
 }
 
 // configHandler：GET 返回配置；POST 保存配置并触发一次 issue 刷新。

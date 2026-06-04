@@ -419,6 +419,7 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     <div class="px-3.5 pb-2 flex gap-1">
       <button id="tabList" class="vtab on">会话</button>
       <button id="tabReport" class="vtab">报表</button>
+      <button id="tabGithub" class="vtab">GitHub</button>
     </div>
 
     <!-- 会话列表视图 -->
@@ -500,6 +501,9 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
 
     <!-- 用量报表（内容由 renderReport 动态填充） -->
     <div id="reportMain" class="hidden flex-1 min-h-0 overflow-y-auto"></div>
+
+    <!-- GitHub（内容由 renderGithub 动态填充） -->
+    <div id="githubMain" class="hidden flex-1 min-h-0 overflow-y-auto"></div>
 
     <!-- 跳到最新 -->
     <button id="jump" class="hidden absolute left-1/2 -translate-x-1/2 bottom-[132px]
@@ -1457,7 +1461,7 @@ function renderSession(d,keepScroll){
   sc.scrollTop=(keepScroll&&scrollMem.has(currentId))?scrollMem.get(currentId):sc.scrollHeight;
 }
 function drawHeader(){
-  if(sidebarView==="report")return; // 报表视图下保留「用量报表」标题，不被会话信息覆盖
+  if(sidebarView==="report"||sidebarView==="github")return; // 报表/GitHub 视图保留自己的标题，不被会话信息覆盖
   const s=curSummary||{};
   $("#barTitle").textContent=s.title||"(无标题会话)";
   const parts=[s.model,s.cwd&&base(s.cwd),s.gitBranch&&("⎇ "+s.gitBranch),
@@ -1956,17 +1960,23 @@ let statsRaw=null, statsAt=0, statsBusy=false, statsPeriod="all", sidebarView="l
 // 切换主区域：会话视图 ⇄ 报表视图
 function setView(v){
   sidebarView=v;
-  const rep=v==="report";
-  $("#scroll").classList.toggle("hidden",rep);
+  const rep=v==="report", gh=v==="github", main=rep||gh;
+  $("#scroll").classList.toggle("hidden",main);
   $("#reportMain").classList.toggle("hidden",!rep);
-  $("#composer").classList.toggle("hidden",rep);
-  if(rep)$("#jump").classList.add("hidden");
-  $("#tabList").classList.toggle("on",!rep);
+  $("#githubMain").classList.toggle("hidden",!gh);
+  $("#composer").classList.toggle("hidden",main);
+  if(main)$("#jump").classList.add("hidden");
+  $("#tabList").classList.toggle("on",v==="list");
   $("#tabReport").classList.toggle("on",rep);
+  $("#tabGithub").classList.toggle("on",gh);
   if(rep){
     $("#barTitle").textContent="用量报表";
     $("#barSub").textContent="";$("#barStatus").innerHTML="";$("#tokDock").innerHTML="";
     statsRaw===null?loadStats():renderReport();
+  }else if(gh){
+    $("#barTitle").textContent="GitHub";
+    $("#barSub").textContent="";$("#barStatus").innerHTML="";$("#tokDock").innerHTML="";
+    loadGithub();
   }else drawHeader(); // 恢复当前会话头部
 }
 async function loadStats(){
@@ -2139,6 +2149,205 @@ function reportTokens(entries){
 }
 $("#tabList").addEventListener("click",()=>setView("list"));
 $("#tabReport").addEventListener("click",()=>setView("report"));
+$("#tabGithub").addEventListener("click",()=>setView("github"));
+
+/* ── GitHub 模块 ── */
+let ghTab="issues", ghIssueState="open", ghPRState="open", ghMineOnly=false;
+let ghItems=null, ghRepos=[], ghErr="", ghBusy=false, ghLoadSeq=0;
+const ghOpen=new Set();   // 已展开的条目 key（repo#number）
+const ghDetail=new Map(); // key → {loading|err|body,comments}
+const ghCache=new Map();  // 查询键 → {items,repos,error}：切回秒开，避免重复干等
+const ghKey=it=>it.repo+"#"+it.number;
+// 当前子 tab + state + 筛选 唯一标识一种查询
+function ghQueryKey(){
+  return ghTab==="issues" ? "i|"+ghIssueState+"|"+(ghMineOnly?1:0) : "p|"+ghPRState;
+}
+
+async function loadGithub(){ await fetchGithub(); }
+
+// 缓存优先：先用上次缓存秒显（顶部标“更新中”），再请求后端补新。
+// force=刷新按钮强制重拉；isAuto=收到过期缓存后的自动补拉（不再链式触发）。
+// ghLoadSeq 丢弃快速切换时的过期响应。
+async function fetchGithub(force,isAuto){
+  const seq=++ghLoadSeq;
+  const key=ghQueryKey();
+  const cached=ghCache.get(key);
+  if(cached){ ghItems=cached.items; ghRepos=cached.repos; ghErr=cached.error; }
+  else{ ghItems=null; ghRepos=[]; ghErr=""; }
+  ghBusy=true; renderGithub();   // 有缓存→秒显旧数据；无缓存→“加载中…”占位
+  const url=(ghTab==="issues"
+    ? "/api/gh/issues?state="+ghIssueState+(ghMineOnly?"&mine=1":"")
+    : "/api/gh/prs?state="+ghPRState)+(force?"&refresh=1":"");
+  let d;
+  try{ d=await(await fetch(url)).json(); }
+  catch(e){
+    if(seq!==ghLoadSeq)return;
+    ghBusy=false; if(!cached){ ghItems=[]; ghErr="无法连接服务"; } renderGithub(); return;
+  }
+  if(seq!==ghLoadSeq)return;
+  ghItems=d.items||[]; ghRepos=d.repos||[]; ghErr=d.error||""; ghBusy=false;
+  ghCache.set(key,{items:ghItems,repos:ghRepos,error:ghErr});
+  renderGithub();
+  // 后端返回的是过期缓存（正在后台刷新）→ 稍后自动补拉一次拿最新数据
+  if(d.stale && !isAuto)
+    setTimeout(()=>{ if(seq===ghLoadSeq && sidebarView==="github") fetchGithub(false,true); }, 1800);
+}
+
+function renderGithub(){
+  const v=$("#githubMain"); v.innerHTML="";
+  const page=h("div",{class:"w-full max-w-[940px] mx-auto px-10 py-9"});
+  v.append(page);
+
+  // 子 tab：Issues / Pull Requests + 刷新
+  const seg=(label,on,fn)=>h("button",{
+    class:"px-3.5 py-[6px] rounded-[10px] text-[12.5px] font-medium transition "
+      +(on?"bg-white/[0.08] text-[#f0f0f3]":"text-[#74747e] hover:bg-white/[0.04]"),
+    onclick:fn},label);
+  const head=h("div",{class:"flex items-center gap-2 mb-5"},
+    seg("Issues",ghTab==="issues",()=>{if(ghTab!=="issues"){ghTab="issues";fetchGithub();}}),
+    seg("Pull Requests",ghTab==="prs",()=>{if(ghTab!=="prs"){ghTab="prs";fetchGithub();}}),
+    h("div",{class:"flex-1"}),
+    h("span",{class:"text-[11px] text-[#54545d]",text:ghBusy?(ghItems===null?"加载中…":"更新中…"):""}),
+    h("button",{class:"rbtn",onclick:()=>fetchGithub(true)},"刷新"));
+  page.append(head, ghFilters());
+
+  if(ghErr)
+    page.append(h("div",{class:"mb-5 py-3 px-4 rounded-[12px] bg-rose/[0.09] "+
+      "ring-1 ring-rose/20 text-rose text-[12px]",text:ghErr}));
+
+  if(ghItems===null){
+    page.append(h("div",{class:"py-20 text-center text-[13px] text-[#54545d]",text:"加载中…"}));
+    return;
+  }
+  if(!ghRepos.length){
+    page.append(h("div",{class:"py-20 text-center text-[13px] text-[#54545d]"},
+      "尚未关注任何仓库 —— 在设置里勾选要「关注」的仓库"));
+    return;
+  }
+  // 按仓库分组（仓库顺序取自后端 repos）
+  ghRepos.forEach(repo=>{
+    page.append(ghRepoGroup(repo, ghItems.filter(it=>it.repo===repo)));
+  });
+}
+
+// 状态分段 + 「只看指向我的」筛选行
+function ghFilters(){
+  const pill=(label,on,fn)=>h("button",{
+    class:"px-3 py-[5px] rounded-[9px] text-[11.5px] transition "
+      +(on?"bg-accent/[0.14] text-accent ring-1 ring-accent/30"
+          :"text-[#74747e] bg-white/[0.04] hover:bg-white/[0.07]"),
+    onclick:fn},label);
+  const row=h("div",{class:"flex items-center gap-1.5 mb-6 flex-wrap"});
+  if(ghTab==="issues"){
+    const st=(k,l)=>pill(l,ghIssueState===k,()=>{if(ghIssueState!==k){ghIssueState=k;fetchGithub();}});
+    const chk=h("input",{type:"checkbox"}); chk.checked=ghMineOnly;
+    chk.addEventListener("change",()=>{ghMineOnly=chk.checked;fetchGithub();});
+    row.append(st("open","进行中"),st("closed","已关闭"),st("all","全部"),
+      h("div",{class:"flex-1"}),
+      h("label",{class:"flex items-center gap-1.5 text-[11.5px] text-[#9a9aa3] cursor-pointer select-none"},
+        chk,"只看指向我的"));
+  }else{
+    const st=(k,l)=>pill(l,ghPRState===k,()=>{if(ghPRState!==k){ghPRState=k;fetchGithub();}});
+    row.append(st("open","进行中"),st("merged","已合并"),st("closed","已关闭"),st("all","全部"));
+  }
+  return row;
+}
+
+// 单个仓库分组：标题 + 计数 + 条目列表
+function ghRepoGroup(repo,items){
+  const wrap=h("div",{class:"mb-7"});
+  wrap.append(h("div",{class:"flex items-center gap-2 mb-2.5"},
+    h("span",{class:"text-[12px] font-semibold text-[#d4d4da]",text:repo}),
+    h("span",{class:"text-[10.5px] text-[#54545d] tabular-nums",text:String(items.length)})));
+  if(!items.length){
+    wrap.append(h("div",{class:"px-3.5 py-3 text-[11.5px] text-[#54545d] "+
+      "rounded-[12px] bg-white/[0.015] ring-1 ring-white/[0.03]",text:"暂无"}));
+    return wrap;
+  }
+  const list=h("div",{class:"flex flex-col gap-1.5"});
+  items.forEach(it=>list.append(ghCard(it)));
+  wrap.append(list);
+  return wrap;
+}
+
+function ghStateBadge(state){
+  const s=(state||"").toUpperCase();
+  let cls="text-[#74747e] bg-white/[0.06]",label=s||"?";
+  if(s==="OPEN"){cls="text-sage bg-sage/[0.14]";label="Open";}
+  else if(s==="MERGED"){cls="text-mauve bg-mauve/[0.14]";label="Merged";}
+  else if(s==="CLOSED"){cls="text-rose bg-rose/[0.12]";label="Closed";}
+  return h("span",{class:"px-1.5 py-[1px] rounded-[6px] text-[10px] font-medium flex-none "+cls,text:label});
+}
+
+// 单条 issue / PR 卡片：可点击展开正文与评论；标题点击在浏览器打开
+function ghCard(it){
+  const key=ghKey(it), opened=ghOpen.has(key);
+  const card=h("div",{class:"card px-3.5 py-2.5"});
+  const top=h("div",{class:"flex items-center gap-2.5 cursor-pointer",onclick:()=>toggleGhDetail(it)});
+  top.append(
+    h("span",{class:"text-[10px] text-[#54545d] flex-none w-[10px] inline-block",
+      style:opened?"transform:rotate(90deg)":"",text:"▸"}),
+    ghStateBadge(it.state),
+    h("span",{class:"text-[11px] text-[#62626b] tabular-nums flex-none",text:"#"+it.number}));
+  const a=h("a",{href:it.url,target:"_blank",rel:"noopener",
+    class:"text-[13px] text-[#ededf0] hover:text-accent truncate flex-1 min-w-0 no-underline",
+    onclick:e=>e.stopPropagation()},it.title);
+  top.append(a);
+  (it.labels||[]).slice(0,3).forEach(l=>{
+    const c=(l.color||"888888");
+    top.append(h("span",{class:"px-1.5 py-[1px] rounded-[6px] text-[10px] flex-none max-w-[120px] truncate",
+      style:"background:#"+c+"22;color:#"+c,text:l.name}));
+  });
+  if(it.reason==="review")
+    top.append(h("span",{class:"px-1.5 py-[1px] rounded-[6px] text-[10px] flex-none text-sand bg-sand/[0.14]",text:"待我 review"}));
+  if(it.isDraft)
+    top.append(h("span",{class:"text-[10px] text-[#74747e] flex-none",text:"draft"}));
+  if(it.comments)
+    top.append(h("span",{class:"text-[10.5px] text-[#62626b] flex-none",text:"💬"+it.comments}));
+  top.append(h("span",{class:"text-[10.5px] text-[#54545d] flex-none tabular-nums",
+    text:relTime(Date.parse(it.updatedAt))}));
+  card.append(top);
+  if(opened)card.append(ghDetailPanel(it));
+  return card;
+}
+
+async function toggleGhDetail(it){
+  const key=ghKey(it);
+  if(ghOpen.has(key)){ghOpen.delete(key);renderGithub();return;}
+  ghOpen.add(key);
+  if(!ghDetail.has(key)){
+    ghDetail.set(key,{loading:true});
+    renderGithub();
+    const type=ghTab==="prs"?"pr":"issue";
+    try{
+      const d=await(await fetch("/api/gh/detail?type="+type
+        +"&repo="+encodeURIComponent(it.repo)+"&number="+it.number)).json();
+      ghDetail.set(key, d.ok?{body:d.body||"",comments:d.comments||[]}:{err:d.error||"加载失败"});
+    }catch(e){ ghDetail.set(key,{err:"无法连接服务"}); }
+  }
+  renderGithub();
+}
+
+// 展开面板：正文 markdown + 评论时间线
+function ghDetailPanel(it){
+  const d=ghDetail.get(ghKey(it))||{};
+  const box=h("div",{class:"mt-3 pt-3 border-t border-white/[0.05]"});
+  if(d.loading){box.append(h("div",{class:"text-[12px] text-[#54545d] py-1",text:"加载详情…"}));return box;}
+  if(d.err){box.append(h("div",{class:"text-[12px] text-rose py-1",text:d.err}));return box;}
+  if(d.body&&d.body.trim())box.append(renderMarkdown(d.body));
+  else box.append(h("div",{class:"text-[12px] text-[#54545d] italic",text:"（无正文）"}));
+  (d.comments||[]).forEach(c=>{
+    const cm=h("div",{class:"mt-3 pl-3 border-l-2 border-white/[0.06]"});
+    cm.append(h("div",{class:"flex items-center gap-2 mb-0.5"},
+      h("span",{class:"text-[11.5px] font-medium text-accent",text:c.author||"?"}),
+      h("span",{class:"text-[10.5px] text-[#54545d]",text:relTime(Date.parse(c.createdAt))})));
+    cm.append(renderMarkdown(c.body||""));
+    box.append(cm);
+  });
+  if(!(d.comments||[]).length)
+    box.append(h("div",{class:"mt-2 text-[11px] text-[#54545d]",text:"暂无评论"}));
+  return box;
+}
 
 /* ── 会话详情缓存：看过的会话切回即时呈现，悬停预取让首次点击也无感 ── */
 const detailCache=new Map();    // id → 详情 JSON（LRU，最近使用置末）
@@ -2822,7 +3031,7 @@ const _openSessionImpl=openSession;
 window.openSession=function(id){
   if(!id)return;
   if(!$("#settings").classList.contains("hidden"))closeSettings();
-  if(sidebarView==="report")setView("list");
+  if(sidebarView!=="list")setView("list");
   _openSessionImpl(id);
   requestAnimationFrame(()=>{
     const el=document.querySelector('#list .item[data-id="'+id.replace(/"/g,'\\"')+'"]');
