@@ -6,5 +6,8 @@
 # macOS
 .DS_Store
 
+# IDE
+/.idea/
+
 # Claude Code 本地工作目录（个人会话与权限缓存，不入仓库）
 /.claude/
