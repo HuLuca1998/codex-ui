@@ -187,6 +187,7 @@ class HoverRowView: NSView {
 // 右侧「详情」按钮（点击在 iTerm2 里跑 /issue info）。
 final class IssueRowView: HoverRowView {
     private let issue: IssueItem
+    private var copiedFlash = false
 
     init(issue: IssueItem, width: CGFloat, owner: AppDelegate) {
         self.issue = issue
@@ -199,9 +200,23 @@ final class IssueRowView: HoverRowView {
         NSRect(x: bounds.width - 14 - 48, y: (bounds.height - 17) / 2,
                width: 48, height: 17)
     }
+    // 编号 #N 的点击热区（最左，点击复制纯数字编号）。
+    private var numberRect: NSRect {
+        let s = NSAttributedString(string: "#\(issue.number)", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)])
+        return NSRect(x: 32, y: (bounds.height - 17) / 2,
+                      width: ceil(s.size().width) + 4, height: 17)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if copiedFlash {
+            let lab = NSAttributedString(string: "✓ 已复制 #\(issue.number)", attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: NSColor(hex: "7fc99a") ?? .systemGreen])
+            lab.draw(at: NSPoint(x: 32, y: (bounds.height - 16) / 2))
+            return
+        }
         let hot = isHot
         drawDot(owner?.labelColor(issue.labels ?? []) ?? .gray)
         if let title = owner?.rowTitle(number: issue.number, repo: issue.repo,
@@ -222,8 +237,23 @@ final class IssueRowView: HoverRowView {
         label.draw(at: NSPoint(x: d.midX - sz.width / 2, y: d.midY - sz.height / 2))
     }
 
+    private func flashCopied() {
+        copiedFlash = true
+        needsDisplay = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.copiedFlash = false
+            self?.needsDisplay = true
+        }
+    }
+
     override func mouseUp(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        // 点编号 → 复制纯数字编号；菜单不关闭，行内闪「已复制」反馈
+        if numberRect.insetBy(dx: -4, dy: -4).contains(p) {
+            owner?.copyToClipboard("\(issue.number)")
+            flashCopied()
+            return
+        }
         let onDetail = detailRect.insetBy(dx: -6, dy: -4).contains(p)
         enclosingMenuItem?.menu?.cancelTracking()
         let it = issue
@@ -237,6 +267,7 @@ final class IssueRowView: HoverRowView {
 // 菜单里的单条 PR 行：左侧标题，右侧来源标签（作者 / 待审）。点击打开 GitHub 页面。
 final class PRRowView: HoverRowView {
     private let pr: PRItem
+    private var copiedFlash = false
 
     init(pr: PRItem, width: CGFloat, owner: AppDelegate) {
         self.pr = pr
@@ -252,9 +283,23 @@ final class PRRowView: HoverRowView {
     private var tagRect: NSRect {
         NSRect(x: bounds.width - 14 - 40, y: (bounds.height - 17) / 2, width: 40, height: 17)
     }
+    // 编号 #N 的点击热区（最左，点击复制纯数字编号）。
+    private var numberRect: NSRect {
+        let s = NSAttributedString(string: "#\(pr.number)", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)])
+        return NSRect(x: 32, y: (bounds.height - 17) / 2,
+                      width: ceil(s.size().width) + 4, height: 17)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if copiedFlash {
+            let lab = NSAttributedString(string: "✓ 已复制 #\(pr.number)", attributes: [
+                .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                .foregroundColor: NSColor(hex: "7fc99a") ?? .systemGreen])
+            lab.draw(at: NSPoint(x: 32, y: (bounds.height - 16) / 2))
+            return
+        }
         let hot = isHot
         drawDot(owner?.labelColor(pr.labels ?? []) ?? .gray)
         let text = pr.isDraft == true ? "[草稿] " + pr.title : pr.title
@@ -275,7 +320,23 @@ final class PRRowView: HoverRowView {
         label.draw(at: NSPoint(x: t.midX - sz.width / 2, y: t.midY - sz.height / 2))
     }
 
+    private func flashCopied() {
+        copiedFlash = true
+        needsDisplay = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.copiedFlash = false
+            self?.needsDisplay = true
+        }
+    }
+
     override func mouseUp(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        // 点编号 → 复制纯数字编号；菜单不关闭，行内闪「已复制」反馈
+        if numberRect.insetBy(dx: -4, dy: -4).contains(p) {
+            owner?.copyToClipboard("\(pr.number)")
+            flashCopied()
+            return
+        }
         enclosingMenuItem?.menu?.cancelTracking()
         let url = pr.url
         DispatchQueue.main.async { [weak owner] in owner?.openIssueLink(url) }
@@ -741,6 +802,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // 点 issue 标题 → 浏览器打开 issue 链接。
     func openIssueLink(_ s: String) {
         if let url = URL(string: s) { openExternal(url) }
+    }
+
+    // 复制文本到系统剪贴板（菜单栏点击 issue/PR 编号时用）。
+    func copyToClipboard(_ s: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(s, forType: .string)
     }
 
     // 点「详情」→ 让 Go 后端在该仓库的本地映射目录用 iTerm2 跑 /issue info。
