@@ -127,6 +127,21 @@ struct AppConfig: Decodable {
     let startup: StartupCfg?
 }
 
+// /api/version 响应：当前版本 + 更新状态机快照（与 update.go 的 snapshot() 一致）。
+struct UpdateStateResp: Decodable {
+    let status: String?     // idle|checking|up-to-date|available|downloading|ready|error
+    let latest: String?     // 远端最新 tag
+    let url: String?        // release 页面
+    let assetUrl: String?
+    let progress: Int?      // 0-100
+    let message: String?    // error 时的原因
+    let current: String?    // 当前运行版本（version 字符串）
+}
+struct VersionResp: Decodable {
+    let version: String?
+    let state: UpdateStateResp?
+}
+
 extension NSColor {
     // 从 GitHub 标签的 6 位十六进制色（无 #）构造颜色。
     convenience init?(hex: String) {
@@ -219,10 +234,18 @@ final class IssueRowView: HoverRowView {
         }
         let hot = isHot
         drawDot(owner?.labelColor(issue.labels ?? []) ?? .gray)
+        // 评论数徽标（详情按钮左侧），并据此收窄标题可用宽度
+        var rightLimit = detailRect.minX
+        if let badge = owner?.commentBadge(issue.comments ?? 0, hot: hot) {
+            let sz = badge.size()
+            let bx = detailRect.minX - 10 - ceil(sz.width)
+            badge.draw(at: NSPoint(x: bx, y: (bounds.height - ceil(sz.height)) / 2))
+            rightLimit = bx
+        }
         if let title = owner?.rowTitle(number: issue.number, repo: issue.repo,
                                        text: issue.title, highlighted: hot) {
             title.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
-                                  width: detailRect.minX - 32 - 10, height: 17))
+                                  width: rightLimit - 32 - 10, height: 17))
         }
         // 「详情」按钮
         let d = detailRect
@@ -303,10 +326,18 @@ final class PRRowView: HoverRowView {
         let hot = isHot
         drawDot(owner?.labelColor(pr.labels ?? []) ?? .gray)
         let text = pr.isDraft == true ? "[草稿] " + pr.title : pr.title
+        // 评论数徽标（来源标签左侧），并据此收窄标题可用宽度
+        var rightLimit = tagRect.minX
+        if let badge = owner?.commentBadge(pr.comments ?? 0, hot: hot) {
+            let sz = badge.size()
+            let bx = tagRect.minX - 10 - ceil(sz.width)
+            badge.draw(at: NSPoint(x: bx, y: (bounds.height - ceil(sz.height)) / 2))
+            rightLimit = bx
+        }
         if let title = owner?.rowTitle(number: pr.number, repo: pr.repo,
                                        text: text, highlighted: hot) {
             title.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
-                                  width: tagRect.minX - 32 - 10, height: 17))
+                                  width: rightLimit - 32 - 10, height: 17))
         }
         // 来源标签
         let t = tagRect
@@ -340,6 +371,122 @@ final class PRRowView: HoverRowView {
         enclosingMenuItem?.menu?.cancelTracking()
         let url = pr.url
         DispatchQueue.main.async { [weak owner] in owner?.openIssueLink(url) }
+    }
+}
+
+// 菜单底部的「更新提示」一行：左侧状态点 + 文本，右侧按钮按 status 切换
+// （检查更新 / 下载并重启 / 重启应用 / 重试）。状态由后端 /api/version 拉取。
+final class UpdateRowView: HoverRowView {
+    private let state: UpdateStateResp?
+
+    init(state: UpdateStateResp?, width: CGFloat, owner: AppDelegate) {
+        self.state = state
+        super.init(width: width, owner: owner)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) 未实现") }
+
+    private var status: String { state?.status ?? "idle" }
+    private var current: String { state?.current ?? "" }
+    private var isDev: Bool { current == "dev" || current.isEmpty }
+
+    private var statusText: String {
+        if state == nil { return "正在获取版本信息…" }
+        if isDev { return "dev 构建 · 自动更新已禁用" }
+        let latest = state?.latest ?? ""
+        switch status {
+        case "checking":    return "正在检查更新…"
+        case "up-to-date":  return "已是最新（\(current)）"
+        case "available":   return "发现新版 \(latest)"
+        case "downloading": return "下载中 \(state?.progress ?? 0)%"
+        case "ready":       return "新版 \(latest) 已就绪"
+        case "error":       return "更新错误：\(ellipsizeStr(state?.message ?? "未知", 28))"
+        default:            return "当前版本 \(current)"
+        }
+    }
+
+    private var dotColor: NSColor {
+        if isDev { return .tertiaryLabelColor }
+        switch status {
+        case "available", "ready":       return NSColor(hex: "E8A33D") ?? .systemOrange
+        case "checking", "downloading":  return NSColor(hex: "5B9DFF") ?? .systemBlue
+        case "up-to-date":               return NSColor(hex: "7fc99a") ?? .systemGreen
+        case "error":                    return NSColor.systemRed
+        default:                         return .tertiaryLabelColor
+        }
+    }
+
+    // 右侧按钮的标题：nil 表示该状态下无可点操作（如 checking/downloading）。
+    private var actionTitle: String? {
+        if isDev || state == nil { return nil }
+        switch status {
+        case "checking", "downloading": return nil
+        case "available":               return "下载并重启"
+        case "ready":                   return "重启应用"
+        case "error":                   return "重试"
+        default:                        return "检查更新"
+        }
+    }
+
+    private var actionIsPrimary: Bool { status == "available" || status == "ready" }
+
+    private var actionRect: NSRect {
+        guard let t = actionTitle else { return .zero }
+        let a = NSAttributedString(string: t, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium)])
+        let w = ceil(a.size().width) + 18
+        return NSRect(x: bounds.width - 14 - w, y: (bounds.height - 17) / 2,
+                      width: w, height: 17)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let hot = isHot
+        drawDot(dotColor)
+        let textColor = hot ? NSColor.white : NSColor.labelColor
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingTail
+        let label = NSAttributedString(string: statusText, attributes: [
+            .foregroundColor: textColor, .paragraphStyle: para,
+            .font: NSFont.menuFont(ofSize: 13)])
+        let rightLimit = (actionTitle == nil) ? bounds.width - 14 : actionRect.minX - 10
+        label.draw(in: NSRect(x: 32, y: (bounds.height - 17) / 2,
+                              width: max(0, rightLimit - 32), height: 17))
+        guard let title = actionTitle else { return }
+        let r = actionRect
+        let primary = actionIsPrimary
+        let fill: NSColor
+        if primary {
+            let base = NSColor(hex: "E8A33D") ?? .systemOrange
+            fill = base.withAlphaComponent(hot ? 0.95 : 0.78)
+        } else {
+            fill = hot ? NSColor.white.withAlphaComponent(0.28)
+                       : NSColor.white.withAlphaComponent(0.09)
+        }
+        fill.setFill()
+        NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
+        let fg: NSColor = primary
+            ? .white
+            : (hot ? .white : (NSColor(hex: "5B9DFF") ?? .systemBlue))
+        let a = NSAttributedString(string: title, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: fg])
+        let sz = a.size()
+        a.draw(at: NSPoint(x: r.midX - sz.width / 2, y: r.midY - sz.height / 2))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard actionTitle != nil else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        if !actionRect.insetBy(dx: -6, dy: -4).contains(p) { return }
+        let s = status
+        enclosingMenuItem?.menu?.cancelTracking()
+        DispatchQueue.main.async { [weak owner] in
+            switch s {
+            case "available": owner?.downloadAndRestart()
+            case "ready":     owner?.applyUpdateNow()
+            default:          owner?.checkUpdateAndReopen()
+            }
+        }
     }
 }
 
@@ -414,6 +561,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // 每个 issue/PR 的评论数基线（key："i:repo#n" / "p:repo#n"），不持久化。
     // 基线没有的 key = 新条目；评论数比基线大 = 新评论。每轮重建以淘汰已关闭项。
     var commentBaseline = [String: Int]()
+    // ── 自动更新状态（菜单底部「更新行」用）──
+    var updateState: UpdateStateResp?     // 最近一次 /api/version 的快照；nil = 还没拉到
+    var autoApplyAfterReady = false       // 「下载并重启」点击后置位：ready 时自动调 apply
+    var fastUpdateTimer: Timer?           // 下载/检查 期间的高频轮询（2s），完成后自停
 
     func applicationDidFinishLaunching(_ note: Notification) {
         startServer()
@@ -540,8 +691,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func pollIssuesOnce() {
         DispatchQueue.global().async { [weak self] in
             let data = self?.fetchMenubar()
+            let ver = self?.fetchVersion()
             DispatchQueue.main.async {
-                guard let self = self, let data = data else { return }
+                guard let self = self else { return }
+                if let ver = ver { self.updateState = ver }
+                guard let data = data else { return }
                 self.menuData = data
                 self.recomputeBadge()
                 self.maybeNotifyNewItems()
@@ -549,10 +703,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
-    // 比对当前 issue 与「已看过」集合：存在未见过的编号则亮红点。
+    // 已读集合的键：含评论数，故评论数变化也会被当作「未读」→ 重新亮红点。
+    func issueSeenKey(_ it: IssueItem) -> String {
+        "\(it.repo)#\(it.number)@\(it.comments ?? 0)"
+    }
+
+    // 比对当前 issue 与「已看过」集合：存在未见过的编号 / 评论数有更新则亮红点。
     func recomputeBadge() {
         let cur = menuData?.issues ?? []
-        let isNew = cur.contains { !seenIssueKeys.contains("\($0.repo)#\($0.number)") }
+        let isNew = cur.contains { !seenIssueKeys.contains(issueSeenKey($0)) }
         if isNew != hasNewIssues {
             hasNewIssues = isNew
             updateStatusIcon()
@@ -639,7 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         // 注意：后端无错误时发的是空字符串 ""（非 nil），不能用 == nil 判断，
         // 否则守卫永远失败、issue 永不标记已读、红点永不消失。
         guard (menuData?.issuesError ?? "").isEmpty, let issues = menuData?.issues else { return }
-        seenIssueKeys = Set(issues.map { "\($0.repo)#\($0.number)" })
+        seenIssueKeys = Set(issues.map { issueSeenKey($0) })
         UserDefaults.standard.set(Array(seenIssueKeys), forKey: "SeenIssueKeys")
         if hasNewIssues {
             hasNewIssues = false
@@ -658,6 +817,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             DispatchQueue.main.async { self?.applyStartupConfig(s) }
         }
         menuData = fetchMenubar()
+        if let ver = fetchVersion() { updateState = ver }
         rebuildMenu(menu)
     }
 
@@ -773,6 +933,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     // 菜单底部固定操作项。
     func addFooter(_ menu: NSMenu) {
+        menu.addItem(.separator())
+        // 更新提示一行：状态 + 「检查更新 / 下载并重启 / 重启应用 / 重试」。
+        let updItem = NSMenuItem()
+        updItem.view = UpdateRowView(state: updateState, width: menuWidth, owner: self)
+        menu.addItem(updItem)
         menu.addItem(.separator())
         let refresh = NSMenuItem(title: "刷新", action: #selector(refreshMenuNow),
                                  keyEquivalent: "")
@@ -933,6 +1098,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
+    // 同步拉取 /api/version（version + 更新状态机）。
+    func fetchVersion() -> UpdateStateResp? {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/api/version") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        var result: UpdateStateResp? = nil
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            defer { sem.signal() }
+            if let data = data,
+               let v = try? JSONDecoder().decode(VersionResp.self, from: data) {
+                result = v.state
+            }
+        }.resume()
+        _ = sem.wait(timeout: .now() + 3)
+        return result
+    }
+
+    // 给后端 POST 一个端点；忽略返回值（更新流程的状态变化走 SSE / 轮询）。
+    func postEndpoint(_ path: String) {
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 6
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    // 「检查更新」按钮：触发后端 check，等异步检查跑完（status 离开 "checking"）
+    // 后重新弹出菜单，让用户立刻看到结果。
+    func checkUpdateAndReopen() {
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            self.postEndpoint("/api/update/check")
+            // 后端 checkUpdate 是 goroutine，POST 立刻返回；这里轮询 status。
+            for _ in 0..<40 { // 最多 8 秒
+                Thread.sleep(forTimeInterval: 0.2)
+                if let s = self.fetchVersion(), (s.status ?? "") != "checking" {
+                    DispatchQueue.main.async {
+                        self.updateState = s
+                        self.statusItem.button?.performClick(nil)
+                    }
+                    return
+                }
+            }
+            DispatchQueue.main.async {
+                self.updateState = self.fetchVersion() ?? self.updateState
+                self.statusItem.button?.performClick(nil)
+            }
+        }
+    }
+
+    // 「下载并重启」按钮：触发后端下载，并打标记 — 状态到 ready 时由高频轮询
+    // 自动调 apply。期间菜单已关闭，下载进度通过 fastUpdateTick 推到 updateState。
+    func downloadAndRestart() {
+        autoApplyAfterReady = true
+        postEndpoint("/api/update/download")
+        startFastUpdatePoll()
+    }
+
+    // 「重启应用」按钮：当 status == ready 时直接 apply。
+    func applyUpdateNow() { postEndpoint("/api/update/apply") }
+
+    // 启动 2s 一次的高频轮询，专门跟踪下载 / 检查 期间的状态变化。
+    func startFastUpdatePoll() {
+        fastUpdateTimer?.invalidate()
+        fastUpdateTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.fastUpdateTick()
+        }
+    }
+
+    func fastUpdateTick() {
+        DispatchQueue.global().async { [weak self] in
+            guard let self = self else { return }
+            let s = self.fetchVersion()
+            DispatchQueue.main.async {
+                if let s = s { self.updateState = s }
+                let st = s?.status ?? ""
+                if st == "ready" && self.autoApplyAfterReady {
+                    self.autoApplyAfterReady = false
+                    self.fastUpdateTimer?.invalidate(); self.fastUpdateTimer = nil
+                    self.postEndpoint("/api/update/apply")
+                } else if st == "error" || st == "up-to-date" || st == "idle" {
+                    self.fastUpdateTimer?.invalidate(); self.fastUpdateTimer = nil
+                    self.autoApplyAfterReady = false
+                }
+            }
+        }
+    }
+
     // 同步拉取 /api/menubar（读 Go 后端缓存，毫秒级）；返回 nil 表示请求失败。
     func fetchMenubar() -> MenubarResponse? {
         guard let url = URL(string: "http://127.0.0.1:\(port)/api/menubar") else { return nil }
@@ -970,6 +1224,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             .foregroundColor: titleColor, .paragraphStyle: para,
             .font: NSFont.menuFont(ofSize: 13)]))
         return r
+    }
+
+    // 评论数徽标「💬 N」；n<=0 返回 nil（无评论不占位）。
+    func commentBadge(_ n: Int, hot: Bool) -> NSAttributedString? {
+        guard n > 0 else { return nil }
+        let color = hot ? NSColor.white.withAlphaComponent(0.85) : NSColor.secondaryLabelColor
+        return NSAttributedString(string: "💬 \(n)", attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+            .foregroundColor: color])
     }
 
     // issue 状态点：取第一个标签的颜色，无标签则灰色。
