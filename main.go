@@ -1471,11 +1471,52 @@ func computeStats() {
 	sendSSE(map[string]any{"t": "stats", "computing": false, "computedAt": statsAt})
 }
 
+// nodeBinDirs 探测常见的 node/npx 安装目录。GUI（Dock）启动时走的是 login
+// shell（zsh -l 只读 .zprofile，不读 .zshrc），nvm/volta 等把 PATH 写在
+// .zshrc 里的安装方式就会让 npx 找不到（exit 127）。这里把这些目录显式探测出来，
+// 前置到 npx 命令的 PATH，避免依赖用户的 shell 配置。
+func nodeBinDirs() []string {
+	home, _ := os.UserHomeDir()
+	var dirs []string
+	// 设置里手填的目录最优先（applyExtraPaths 用的同一来源）
+	dirs = append(dirs, splitPathList(liveConfig().General.ExtraPaths)...)
+	// nvm：~/.nvm/versions/node/*/bin（可能多版本，全部加入，由 npx 选第一个可用的）
+	if ms, _ := filepath.Glob(filepath.Join(home, ".nvm/versions/node/*/bin")); len(ms) > 0 {
+		dirs = append(dirs, ms...)
+	}
+	// 其它常见前缀：homebrew、官方 pkg、volta、pnpm、fnm
+	dirs = append(dirs,
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		filepath.Join(home, ".volta/bin"),
+		filepath.Join(home, "Library/pnpm"),
+		filepath.Join(home, ".local/state/fnm_multishells"),
+		filepath.Join(home, ".local/bin"),
+	)
+	// 去重 + 仅保留真实存在的目录
+	seen := map[string]bool{}
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // runCcusage 经登录 shell 调用 `npx ccusage <source> session --json --offline`，
-// 登录 shell 用于取得 nvm 等环境里的 npx。
+// 登录 shell 用于取得 nvm 等环境里的 npx；再叠加 nodeBinDirs() 兜底自动探测。
 func runCcusage(source string) ([]SessStat, error) {
-	cmd := exec.Command("/bin/zsh", "-lc",
-		"npx --prefer-offline -y ccusage "+source+" session --json --offline")
+	script := ""
+	if dirs := nodeBinDirs(); len(dirs) > 0 {
+		script = `export PATH="` + strings.Join(dirs, ":") + `:$PATH"; `
+	}
+	script += "npx --prefer-offline -y ccusage " + source + " session --json --offline"
+	cmd := exec.Command("/bin/zsh", "-lc", script)
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("ccusage %s 失败: %v", source, err)
