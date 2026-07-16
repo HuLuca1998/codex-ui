@@ -25,6 +25,8 @@ tailwind.config={theme:{extend:{
   .item{ @apply flex flex-col gap-1.5 mx-2 px-3 py-2.5 rounded-[16px] cursor-pointer
           transition-all duration-200 hover:bg-white/[0.035]; }
   .item.sel{ @apply bg-white/[0.06]; }
+  .item.virtual{ @apply bg-white/[0.022] hover:bg-white/[0.045]; }
+  .item.virtual .ttl{ @apply text-[#c9c9d0]; }
   .item .ttl{ @apply text-[13px] font-medium text-[#bdbdc4] truncate flex-1 min-w-0; }
   .item.sel .ttl{ @apply text-[#f0f0f3]; }
   .item .prev{ @apply text-[12px] leading-snug text-[#74747e] line-clamp-1; }
@@ -33,17 +35,17 @@ tailwind.config={theme:{extend:{
   .item .mtime{ @apply flex-none whitespace-nowrap; }
   .item .sid{ @apply font-mono text-[#4a4a52] ml-auto flex-none max-w-[116px] truncate; }
   .item .pin{ @apply text-[10px] text-sand flex-none; }
-  /* 折叠箭头：父项右上角，独立 hit-area，与点击进入会话区分 */
-  .item .chev{ @apply flex-none w-[18px] h-[18px] grid place-items-center rounded-[6px]
-                text-[10px] text-[#62626b] hover:bg-white/[0.07] hover:text-[#bdbdc4]
-                transition cursor-pointer select-none; }
-  .item .chev .ic{ @apply transition-transform duration-150; }
+  /* 折叠开关：箭头 + 子代理数量合成一颗按钮，独立 hit-area，与点击进入会话区分。
+     实心底 + accent 字色，避免淹没在标题行里。 */
+  .item .chev{ @apply flex-none flex items-center gap-[3px] h-[19px] pl-[4px] pr-[6px]
+                rounded-[6px] text-[10.5px] font-semibold tabular-nums
+                bg-accent/[0.14] text-accent/90 ring-1 ring-accent/25
+                hover:bg-accent/[0.26] hover:text-accent transition
+                cursor-pointer select-none; }
+  .item .chev .ic{ @apply text-[8px] leading-none transition-transform duration-150; }
   .item.exp .chev .ic{ transform: rotate(90deg); }
-  /* 子代理计数徽章：紧靠 chev，单击切折叠 */
-  .item .subcnt{ @apply flex-none text-[10px] tracking-wide text-[#74747e]
-                  px-1.5 py-[1px] rounded-[5px] bg-white/[0.04]
-                  hover:bg-white/[0.08] cursor-pointer select-none; }
-  /* 子代理行：缩进 + 左侧 spine + 头部横向连接线 */
+  .item.exp .chev{ @apply bg-accent/[0.22] text-accent; }
+  /* agent 成员行：缩进 + 左侧 spine + 头部横向连接线 */
   .item.sub{ @apply ml-5 pl-3.5 py-1.5 gap-1 rounded-[12px]; position: relative; }
   .item.sub::before{ content:""; position:absolute; left:0; top:-6px; bottom:6px;
                      width:1px; background:rgba(255,255,255,0.07); }
@@ -292,6 +294,15 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
   font-family:ui-monospace,Menlo,monospace}
 .think-body .md{color:#9a9aa3;font-size:12.5px}
 
+/* 侧栏宽度走 CSS 变量，由拖拽条改写并存 localStorage。
+   规则写在 media query 之前，移动端抽屉的固定宽度才能覆盖它。 */
+#app > aside{width:var(--sbw,272px)}
+#sbResize{flex:none;width:5px;cursor:col-resize;background:#0b0b0c;position:relative}
+#sbResize::after{content:"";position:absolute;top:0;bottom:0;left:1px;right:1px;
+  border-radius:2px;background:transparent;transition:background .12s}
+#sbResize:hover::after,body.sb-dragging #sbResize::after{background:rgba(154,160,232,.55)}
+body.sb-dragging{cursor:col-resize;user-select:none}
+
 /* ───────────────────── 移动端适配（<768px） ─────────────────────
    原则：所有规则收敛在此 media query 内，桌面路径完全不动。
    断点 767px = Tailwind 默认 md 之下。 */
@@ -317,6 +328,8 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
     box-shadow:6px 0 30px rgba(0,0,0,.5);
   }
   body.drawer-open #app > aside{transform:translateX(0)}
+  /* 抽屉态下侧栏浮在主区之上，拖拽条无处可拖 */
+  #sbResize{display:none!important}
   /* 抽屉遮罩 */
   #drawerMask{
     position:fixed;inset:0;z-index:55;background:rgba(0,0,0,.55);
@@ -369,8 +382,10 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
   #list .item .ttl{font-size:15px!important;line-height:1.35!important}
   #list .item .prev{font-size:13.5px!important}
   #list .item .metaline{font-size:12px!important;gap:8px!important}
-  #list .item .chev{width:32px!important;height:32px!important;font-size:12px!important}
-  #list .item .subcnt{font-size:12px!important;padding:3px 8px!important}
+  /* 折叠开关放大到可点的触控尺寸 */
+  #list .item .chev{height:28px!important;font-size:12.5px!important;
+                    padding-left:7px!important;padding-right:10px!important;gap:5px!important}
+  #list .item .chev .ic{font-size:10px!important}
   #list .item.sub{margin-left:18px!important;padding:9px 12px!important}
   #list .item.sub .ttl{font-size:14px!important}
   /* 顶栏：放大汉堡按钮触达 */
@@ -406,7 +421,7 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
      ring-1 ring-white/[0.05] shadow-[0_40px_90px_-25px_rgba(0,0,0,.85)]">
 
   <!-- ── 左侧导航 ── -->
-  <aside class="w-[272px] flex-none flex flex-col overflow-hidden bg-[#0b0b0c]">
+  <aside class="flex-none flex flex-col overflow-hidden bg-[#0b0b0c]">
     <!-- 标题栏拖拽区：系统红绿灯浮于此处（app 模式） -->
     <div class="tbstrip drag-region"></div>
     <div class="flex items-center gap-3 px-5 pt-5 pb-4">
@@ -471,6 +486,9 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
         flex items-center justify-center" title="设置">⚙</button>
     </div>
   </aside>
+
+  <!-- 侧栏拖拽条：双击复位到默认宽度 -->
+  <div id="sbResize" title="拖动调整侧栏宽度（双击复位）"></div>
 
   <!-- ── 主工作区 ── -->
   <main class="flex-1 flex flex-col min-w-0 relative bg-[#0f0f10]">
@@ -1628,7 +1646,7 @@ function ctime(s){
   return t||s.mtime||0;
 }
 // 构建单个会话列表项
-// opts: { sub:true → 子代理行；childCount:N → 父项显示折叠控件；expanded:true → 展开态；last:true → 最后一个子项裁断 spine }
+// opts: { sub:true → 子项；childCount:N → 分组；virtual:true → 虚拟父项；last:true → 裁断 spine }
 function buildItem(s,opts){
   opts=opts||{};
   const cls=["item"];
@@ -1636,25 +1654,34 @@ function buildItem(s,opts){
   if(opts.sub)cls.push("sub");
   if(opts.last)cls.push("last");
   if(opts.expanded)cls.push("exp");
-  const it=h("div",{class:cls.join(" "),"data-id":s.id,
-    "data-sid":s.sid||"",
-    onclick:()=>openSession(s.id),
-    onmouseenter:()=>prefetchOnHover(s.id),
-    onmouseleave:()=>clearTimeout(hoverTimer)});
+  if(opts.childCount)cls.push("group");
+  if(opts.virtual)cls.push("virtual");
+  const attrs={class:cls.join(" "),"data-id":s.id,"data-sid":s.sid||"",
+    "data-virtual":opts.virtual?"1":"0"};
+  if(opts.virtual){
+    attrs.onclick=()=>toggleSubExpanded(s.sid);
+  }else{
+    attrs.onclick=()=>openSession(s.id);
+    attrs.onmouseenter=()=>prefetchOnHover(s.id);
+    attrs.onmouseleave=()=>clearTimeout(hoverTimer);
+  }
+  const it=h("div",attrs);
   // 显示态：父项汇总自身与所有子代理（aggMtime/aggActive 已注入到副本）
   const showMtime=s._aggMtime||s.mtime;
   const showActive=s._aggActive!==undefined?s._aggActive:s.active;
   const titleRow=h("div",{class:"flex items-center gap-2"},
     h("span",{class:"dot "+(showActive?"live":"idle")}),
-    h("span",{class:"ttl",text:s.title||"(无标题会话)"}));
-  if(pinned.has(s.id))titleRow.append(h("span",{class:"pin",text:"★"}));
-  // 父项：右上角折叠箭头 + 子代理计数徽章
+    h("span",{class:"ttl",title:s.agentPath||s.title||"",text:s.title||"(无标题会话)"}));
+  if(!opts.virtual&&pinned.has(s.id))titleRow.append(h("span",{class:"pin",text:"★"}));
+  // 父项：右上角折叠开关，箭头与子代理数量同属一颗按钮
   if(opts.childCount){
     const toggle=e=>{e.stopPropagation();toggleSubExpanded(s.sid);};
-    titleRow.append(h("span",{class:"subcnt",title:opts.childCount+" 个子代理",
-      onclick:toggle},"⊂"+opts.childCount));
-    titleRow.append(h("span",{class:"chev",title:opts.expanded?"折叠":"展开",
-      onclick:toggle},h("span",{class:"ic",text:"▸"})));
+    const label=opts.childLabel||"成员";
+    titleRow.append(h("span",{class:"chev",
+      title:(opts.expanded?"折叠":"展开")+" "+opts.childCount+" 个 "+label,
+      onclick:toggle},
+      h("span",{class:"ic",text:"▶"}),
+      h("span",{text:String(opts.childCount)})));
   }
   it.append(titleRow);
   if(s.preview)it.append(h("div",{class:"prev",text:s.preview}));
@@ -1663,10 +1690,45 @@ function buildItem(s,opts){
     h("span",{class:"mtime",text:relTime(showMtime)}));
   // 子代理行省 role 徽章（行本身已经在缩进里表达了身份）
   if(s.agentRole&&!opts.sub)meta.append(h("span",{class:"badge",text:s.agentRole}));
-  if(s.sid)meta.append(h("span",{class:"sid",title:s.sid,text:shortSid(s.sid)}));
+  if(opts.sub&&s.source==="codex"&&s.agentName)
+    meta.append(h("span",{class:"badge",title:"Codex agent nickname",text:s.agentName}));
+  if(s.sid&&!opts.virtual)meta.append(h("span",{class:"sid",title:s.sid,text:shortSid(s.sid)}));
   it.append(meta);
   return it;
 }
+/* 侧栏宽度：拖拽调整，存 localStorage，下次启动直接按存量渲染 */
+const SBW_KEY="codexui.sidebarWidth",SBW_MIN=200,SBW_MAX=560,SBW_DEF=272;
+const clampSbw=w=>Math.min(SBW_MAX,Math.max(SBW_MIN,Math.round(w)));
+function setSidebarWidth(w,persist){
+  document.documentElement.style.setProperty("--sbw",clampSbw(w)+"px");
+  if(persist)try{localStorage.setItem(SBW_KEY,String(clampSbw(w)));}catch(e){}
+}
+(function initSidebarResize(){
+  const saved=parseInt(localStorage.getItem(SBW_KEY)||"",10);
+  if(Number.isFinite(saved))setSidebarWidth(saved,false);
+  const bar=$("#sbResize"),aside=$("#app > aside");
+  if(!bar||!aside)return;
+  bar.addEventListener("pointerdown",e=>{
+    if(e.button!==0)return;
+    e.preventDefault();
+    const x0=e.clientX,w0=aside.getBoundingClientRect().width;
+    document.body.classList.add("sb-dragging");
+    bar.setPointerCapture(e.pointerId);
+    const move=ev=>setSidebarWidth(w0+ev.clientX-x0,false);
+    const up=ev=>{
+      bar.releasePointerCapture(e.pointerId);
+      bar.removeEventListener("pointermove",move);
+      bar.removeEventListener("pointerup",up);
+      bar.removeEventListener("pointercancel",up);
+      document.body.classList.remove("sb-dragging");
+      setSidebarWidth(w0+ev.clientX-x0,true);
+    };
+    bar.addEventListener("pointermove",move);
+    bar.addEventListener("pointerup",up);
+    bar.addEventListener("pointercancel",up);
+  });
+  bar.addEventListener("dblclick",()=>setSidebarWidth(SBW_DEF,true));
+})();
 /* 子代理展开状态：持久化按父 sid 记忆，默认全折叠 */
 const SUBEXP_KEY="codexui.subagentExpanded";
 let subExpanded=new Set();
@@ -1681,13 +1743,13 @@ function toggleSubExpanded(sid){
   saveSubExpanded();renderList();
 }
 function expandAllSub(){
-  for(const s of sessions.values())if(s.parentSid)subExpanded.add(s.parentSid);
+  for(const row of listRows)if(row.kind==="group"&&row.parent.sid)subExpanded.add(row.parent.sid);
   saveSubExpanded();renderList();
 }
 function collapseAllSub(){subExpanded.clear();saveSubExpanded();renderList();}
 
 // 列表行可以是单个会话项，或一个『父+子』分组（折叠态只渲染父，展开态再追加子）
-// listRows 元素：{kind:"item",s} | {kind:"group",parent,children} | {kind:"divider"}
+// listRows 元素：{kind:"item",s} | {kind:"group",parent,children,childLabel} | {kind:"divider"}
 let listRows=[], listShown=0;
 const LIST_CHUNK=120;
 function appendRow(frag,row){
@@ -1695,7 +1757,8 @@ function appendRow(frag,row){
   if(row.kind==="item"){frag.append(buildItem(row.s));return;}
   // group：父 + 可选的子项
   const expanded=subExpanded.has(row.parent.sid);
-  frag.append(buildItem(row.parent,{childCount:row.children.length,expanded}));
+  frag.append(buildItem(row.parent,{childCount:row.children.length,expanded,
+    virtual:!!row.parent.virtualGroup,childLabel:row.childLabel}));
   if(expanded){
     row.children.forEach((c,i)=>
       frag.append(buildItem(c,{sub:true,last:i===row.children.length-1})));
@@ -1712,85 +1775,122 @@ function listChunk(){
 function matchKeyword(s,q){
   if(!q)return true;
   return ((s.title||"")+(s.preview||"")+(s.cwd||"")+(s.sid||"")+
-          (s.gitBranch||"")+(s.agentRole||"")).toLowerCase().includes(q);
+          (s.gitBranch||"")+(s.agentRole||"")+(s.agentName||"")+
+          (s.agentPath||"")+(s.teamName||"")+(s.directParentSid||"")).toLowerCase().includes(q);
+}
+function virtualGroupParent(kind,key,kids){
+  const first=kids[0]||{},times=kids.map(ctime).filter(Boolean);
+  const mtime=Math.max(0,...kids.map(s=>s.mtime||0));
+  const active=kids.some(s=>s.active);
+  if(kind==="claude-team"){
+    const teamTitle=kids.find(s=>s.teamTitle)?.teamTitle;
+    return {id:"virtual/claude-team/"+key,sid:"team:"+key,source:"claude",
+      title:teamTitle||("Claude 团队 · "+key),preview:kids.length+" 个 teammate",
+      cwd:first.cwd||"",gitBranch:first.gitBranch||"",teamName:key,agentRole:"team",
+      startTime:times.length?new Date(Math.min(...times)).toISOString():"",
+      mtime,active,virtualGroup:true};
+  }
+  const source=first.source||"codex",sourceName=source==="claude"?"Claude":"Codex";
+  return {id:"virtual/agent-root/"+key,sid:key,source,
+    title:sourceName+" 子代理组",preview:"根会话文件不存在 · "+kids.length+" 个 subagent",
+    cwd:first.cwd||"",gitBranch:first.gitBranch||"",agentRole:"agent-group",
+    startTime:times.length?new Date(Math.min(...times)).toISOString():"",
+    mtime,active,virtualGroup:true};
 }
 function renderList(){
   refreshProjects();
   const q=$("#q").value.trim().toLowerCase();
-  // 1) 收集所有会话；按 parentSid 分组（仅 Claude 子代理有 parentSid）
-  const childrenBySid=new Map();       // parentSid → 子代理[]
+  // 1) 显式父级优先：Codex 按根 session_id，旧 Claude subagents 按路径父 sid。
   const all=[...sessions.values()];
+  const sidIndex=new Map(all.filter(s=>s.sid).map(s=>[s.sid,s]));
+  const hasParent=s=>!!s.parentSid&&s.parentSid!==s.sid; // 自己不能是自己的父
+  const groups=new Map(),groupedIDs=new Set(),groupParentIDs=new Set();
   for(const s of all){
-    if(s.source==="claude"&&s.parentSid){
-      const arr=childrenBySid.get(s.parentSid)||[];
-      arr.push(s);childrenBySid.set(s.parentSid,arr);
+    if(hasParent(s)){
+      const key="parent:"+s.parentSid;
+      let g=groups.get(key);
+      if(!g){g={kind:"agent",parentSid:s.parentSid,children:[],childLabel:"subagent"};groups.set(key,g);}
+      g.children.push(s);groupedIDs.add(s.id);
     }
   }
-  // 2) 自动展开命中的父项（搜索匹配到子代理时）
+  for(const g of groups.values()){
+    g.parent=sidIndex.get(g.parentSid)||virtualGroupParent("codex-root",g.parentSid,g.children);
+    if(!g.parent.virtualGroup)groupParentIDs.add(g.parent.id);
+  }
+  // 2) Claude Agent Team 是扁平成员集合；没有 team-lead JSONL 时合成团队行。
+  const teams=new Map();
+  for(const s of all){
+    if(s.source!=="claude"||!s.teamName||groupedIDs.has(s.id))continue;
+    const arr=teams.get(s.teamName)||[];arr.push(s);teams.set(s.teamName,arr);
+  }
+  for(const [teamName,members] of teams){
+    const lead=members.find(s=>s.agentRole==="team-lead"||s.agentName==="team-lead");
+    const kids=lead?members.filter(s=>s.id!==lead.id):members;
+    if(!kids.length)continue;
+    const parent=lead||virtualGroupParent("claude-team",teamName,kids);
+    groups.set("team:"+teamName,{kind:"claude-team",parent,children:kids,childLabel:"teammate"});
+    kids.forEach(s=>groupedIDs.add(s.id));
+    if(lead)groupParentIDs.add(lead.id);
+  }
+  // 3) 独立真实会话不进入任何分组；真实父项由 group 行负责渲染。
+  const entries=[];
+  for(const g of groups.values())entries.push({...g,kind:"group"});
+  for(const s of all){
+    if(!groupedIDs.has(s.id)&&!groupParentIDs.has(s.id))entries.push({kind:"item",parent:s,children:[]});
+  }
+  // 4) 自动展开搜索命中的子项。
   if(q){
-    for(const [psid,kids] of childrenBySid){
-      if(kids.some(c=>matchKeyword(c,q)))subExpanded.add(psid);
+    for(const e of entries){
+      if(e.kind==="group"&&e.children.some(c=>matchKeyword(c,q)))subExpanded.add(e.parent.sid);
     }
   }
-  // 3) 过滤函数（不含子代理 — 子代理跟随父项）
+  // 5) 过滤函数：分组随任一真实成员保留。
   const passSrc=s=>{
     if(srcFilter!=="all"&&s.source!==srcFilter)return false;
     if(srcFilter==="claude"&&projectFilter!=="all"&&claudeProject(s)!==projectFilter)return false;
     return true;
   };
-  const passDate=s=>pinned.has(s.id)||inRange(s._aggMtime||s.mtime);
-  // 4) 顶层 = 非子代理 + 找不到父的孤儿子代理（防止孤儿被吞掉）
-  const sidIndex=new Set(all.filter(s=>s.sid).map(s=>s.sid));
-  const tops=[];
-  for(const s of all){
-    if(s.source==="claude"&&s.parentSid){
-      if(sidIndex.has(s.parentSid))continue; // 有父，归到 group
-    }
-    tops.push(s);
-  }
-  // 5) 给每个顶层会话注入聚合 mtime/active（含子代理活动），用于排序与展示
-  for(const s of tops){
-    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
-    let m=s.mtime||0,active=!!s.active;
-    for(const c of kids){
+  // 6) 聚合活动状态并生成副本，避免把临时字段写回 SSE 会话对象。
+  for(const e of entries){
+    let m=e.parent.mtime||0,active=!!e.parent.active;
+    for(const c of e.children){
       if((c.mtime||0)>m)m=c.mtime||0;
       if(c.active)active=true;
     }
-    s._aggMtime=m;s._aggActive=active;
+    e.parent={...e.parent,_aggMtime:m,_aggActive:active};
+    e.pinned=(!e.parent.virtualGroup&&pinned.has(e.parent.id))||e.children.some(c=>pinned.has(c.id));
+    e.realCount=e.children.length+(e.parent.virtualGroup?0:1);
   }
-  // 6) 过滤 + 排序：搜索时，父项匹配或任一子代理匹配都保留
-  const visible=tops.filter(s=>{
-    if(!passSrc(s))return false;
-    if(!passDate(s))return false;
+  // 7) 过滤 + 排序：父项或任一子项匹配即可保留。
+  const visible=entries.filter(e=>{
+    if(!passSrc(e.parent)&&!e.children.some(passSrc))return false;
+    if(!e.pinned&&!inRange(e.parent._aggMtime||e.parent.mtime))return false;
     if(!q)return true;
-    if(matchKeyword(s,q))return true;
-    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
-    return kids.some(c=>matchKeyword(c,q));
+    return matchKeyword(e.parent,q)||e.children.some(c=>matchKeyword(c,q));
   }).sort((a,b)=>{
-    const pa=pinned.has(a.id),pb=pinned.has(b.id);
-    if(pa!==pb)return pa?-1:1;
-    return ctime(b)-ctime(a); // 稳定的创建时间序，避免子代理活跃时父项乱跳
+    if(a.pinned!==b.pinned)return a.pinned?-1:1;
+    return ctime(b.parent)-ctime(a.parent); // 稳定的创建时间序，避免子代理活跃时父项乱跳
   });
-  // 7) 组装 listRows；置顶组与其余之间插分隔线
+  // 8) 组装 listRows；置顶组与其余之间插分隔线。
   listRows=[];let pinTop=0;
-  for(const s of visible)if(pinned.has(s.id))pinTop++;
-  visible.forEach((s,i)=>{
+  for(const e of visible)if(e.pinned)pinTop++;
+  visible.forEach((e,i)=>{
     if(i===pinTop&&pinTop>0&&pinTop<visible.length)listRows.push({kind:"divider"});
-    const kids=(s.sid&&childrenBySid.get(s.sid))||[];
-    if(kids.length){
+    if(e.kind==="group"){
       // 子项按 mtime 倒序，搜索时把命中的子项放前面
-      const sortedKids=[...kids].sort((a,b)=>(b.mtime||0)-(a.mtime||0));
-      listRows.push({kind:"group",parent:s,children:sortedKids});
+      const sortedKids=[...e.children].sort((a,b)=>{
+        if(q){const am=matchKeyword(a,q),bm=matchKeyword(b,q);if(am!==bm)return am?-1:1;}
+        return (b.mtime||0)-(a.mtime||0);
+      });
+      listRows.push({kind:"group",parent:e.parent,children:sortedKids,childLabel:e.childLabel});
     }else{
-      listRows.push({kind:"item",s});
+      listRows.push({kind:"item",s:e.parent});
     }
   });
   const lst=$("#list"),keepTop=lst.scrollTop;
   lst.innerHTML="";listShown=0;
-  // 计数：父项+子代理（用户期望看到总数，与之前平铺一致）
-  let total=visible.length;
-  for(const s of visible)total+=((s.sid&&childrenBySid.get(s.sid))||[]).length;
-  $("#sCount").textContent=total;
+  // 会话计数只统计真实 JSONL；虚拟父项不制造一条假会话。
+  $("#sCount").textContent=visible.reduce((n,e)=>n+e.realCount,0);
   listChunk();
   while(listShown<listRows.length&&lst.scrollHeight<keepTop+lst.clientHeight+240)listChunk();
   lst.scrollTop=keepTop;
@@ -1867,23 +1967,26 @@ function buildListItemMenu(it){
   const items=[];
   if(it){
     const id=it.dataset.id, sid=it.dataset.sid;
-    const sess=sessions.get(id);
-    items.push({label:pinned.has(id)?"取消置顶":"★ 置顶",run:()=>togglePin(id)});
-    if(it.classList.contains("exp"))
-      items.push({label:"折叠子代理",run:()=>toggleSubExpanded(sid)});
-    else if(sid&&[...sessions.values()].some(s=>s.parentSid===sid))
-      items.push({label:"展开子代理",run:()=>toggleSubExpanded(sid)});
+    const sess=sessions.get(id),virtual=it.dataset.virtual==="1";
+    if(!virtual)
+      items.push({label:pinned.has(id)?"取消置顶":"★ 置顶",run:()=>togglePin(id)});
+    if(it.classList.contains("group")){
+      if(it.classList.contains("exp"))
+        items.push({label:"折叠成员",run:()=>toggleSubExpanded(sid)});
+      else
+        items.push({label:"展开成员",run:()=>toggleSubExpanded(sid)});
+    }
     // 分享该会话深链（同一 Wi-Fi 打开直达）— 缺 sid 的会话无法被定位，灰掉
-    if(sess&&sess.sid)
+    if(!virtual&&sess&&sess.sid)
       items.push({label:"🔗 分享会话",run:()=>window.openShareModal&&window.openShareModal(sess)});
-    if(sess&&sess.sid)
+    if(!virtual&&sess&&sess.sid)
       items.push({label:"📋 复制 session id",run:()=>copyText(sess.sid)});
-    if(sess&&sess.file)
+    if(!virtual&&sess&&sess.file)
       items.push({label:"📝 用 VSCode 打开 jsonl",run:()=>openInEditor(sess.file)});
     items.push({div:true});
   }
-  items.push({label:"展开全部子代理",run:expandAllSub});
-  items.push({label:"折叠全部子代理",run:collapseAllSub});
+  items.push({label:"展开全部成员",run:expandAllSub});
+  items.push({label:"折叠全部成员",run:collapseAllSub});
   return items;
 }
 $("#list").addEventListener("contextmenu",e=>{
@@ -1937,7 +2040,7 @@ $("#barTitle")?.parentElement?.addEventListener("dblclick",()=>{
   const cancel=()=>{if(timer){clearTimeout(timer);timer=null;}target=null;};
   LIST.addEventListener("pointerdown",e=>{
     if(e.pointerType==="mouse")return; // 仅触屏；鼠标走右键
-    if(e.target.closest(".chev,.subcnt"))return; // 折叠控件不算长按目标
+    if(e.target.closest(".chev"))return; // 折叠控件不算长按目标
     const it=e.target.closest(".item");
     if(!it)return;
     target=it;startX=e.clientX;startY=e.clientY;

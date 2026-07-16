@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/subtle"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -35,7 +37,15 @@ var indexHTML []byte
 //go:embed tailwind.js
 var tailwindJS []byte
 
-const headLimit = 64 * 1024 // 启动时每个文件最多读取的头部字节
+const headLimit = 64 * 1024 // 启动时每个文件至少读取的头部字节
+
+// headTitleLimit 是启动时为了拿到标题愿意追加读取的上限。
+// Codex 把 AGENTS.md、world_state 等大块塞在首条 user_message 之前，
+// 实测首条用户消息中位数已在 71KB、最远 246KB，光靠 headLimit 够不到。
+const headTitleLimit = 1024 * 1024
+
+// maxLineBytes 覆盖单行 world_state 这类巨型事件。
+const maxLineBytes = 16 * 1024 * 1024
 
 // srcDef 是一个数据源（codex / claude）及其根目录。
 type srcDef struct{ name, root string }
@@ -51,23 +61,27 @@ var (
 
 // Summary 是单个会话在列表中的概要（仅元信息，统计交由前端计算）。
 type Summary struct {
-	ID         string `json:"id"`
-	File       string `json:"file"`
-	Source     string `json:"source"` // codex | claude
-	Sid        string `json:"sid"`    // 会话编号（Codex session id / Claude sessionId）
-	Title      string `json:"title"`
-	Preview    string `json:"preview"`
-	Cwd        string `json:"cwd"`
-	Model      string `json:"model"`
-	Originator string `json:"originator"`
-	CliVersion string `json:"cliVersion"`
-	AgentRole  string `json:"agentRole"`
-	AgentName  string `json:"agentName"`
-	ParentSid  string `json:"parentSid"` // Claude 子代理：父会话 sid（== 路径中 <uuid>/subagents/ 的 uuid）
-	GitBranch  string `json:"gitBranch"`
-	StartTime  string `json:"startTime"`
-	Mtime      int64  `json:"mtime"`
-	Active     bool   `json:"active"`
+	ID              string `json:"id"`
+	File            string `json:"file"`
+	Source          string `json:"source"` // codex | claude
+	Sid             string `json:"sid"`    // 会话编号（Codex session id / Claude sessionId）
+	Title           string `json:"title"`
+	Preview         string `json:"preview"`
+	Cwd             string `json:"cwd"`
+	Model           string `json:"model"`
+	Originator      string `json:"originator"`
+	CliVersion      string `json:"cliVersion"`
+	AgentRole       string `json:"agentRole"`
+	AgentName       string `json:"agentName"`
+	AgentPath       string `json:"agentPath"`       // Codex 子代理任务路径（如 /root/review/security）
+	ParentSid       string `json:"parentSid"`       // 子代理归属的根会话 sid（Claude 取自路径，Codex 取自 session_id）
+	DirectParentSid string `json:"directParentSid"` // Codex 直接父 thread id；侧栏当前按根聚合
+	TeamName        string `json:"teamName"`        // Claude Agent Team 标识
+	TeamTitle       string `json:"teamTitle"`       // Claude 团队公共 aiTitle，仅用于分组行
+	GitBranch       string `json:"gitBranch"`
+	StartTime       string `json:"startTime"`
+	Mtime           int64  `json:"mtime"`
+	Active          bool   `json:"active"`
 }
 
 // state 跟踪一个会话文件的解析进度。
@@ -75,8 +89,11 @@ type state struct {
 	sum        Summary
 	source     string
 	root       string
-	offset     int64 // 已处理到的字节偏移（仅含完整行）
-	threadName bool  // 标题是否已锁定
+	offset     int64  // 已处理到的字节偏移（仅含完整行）
+	threadName bool   // 标题是否已锁定
+	agentPath  string // Codex 子 agent 的任务路径；非子会话为空
+	claudeTask string // Claude teammate 首条任务正文（已去掉包装标签）
+	metaSeen   bool   // 首条 session_meta 是否已消费
 }
 
 // fileEntry 是一次扫描中发现的会话文件。
@@ -251,7 +268,7 @@ func inDateRange(ms int64, rng string) bool {
 	now := time.Now()
 	switch rng {
 	case "week":
-		start := now.AddDate(0, 0, -((int(now.Weekday())+6)%7)) // 周一为一周起点
+		start := now.AddDate(0, 0, -((int(now.Weekday()) + 6) % 7)) // 周一为一周起点
 		start = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, now.Location())
 		return !t.Before(start)
 	case "month":
@@ -617,11 +634,11 @@ func processFile(fe fileEntry, fi os.FileInfo, broadcast, startup bool) {
 
 	switch {
 	case isNew:
-		to := size
-		if startup && to > headLimit {
-			to = headLimit
+		if startup && size > headLimit {
+			parseHead(st, fe.path)
+		} else {
+			parseInto(st, fe.path, 0, size)
 		}
-		parseInto(st, fe.path, 0, to)
 		st.offset = size
 	case size > st.offset:
 		ev, no := readLines(fe.path, st.offset, -1)
@@ -637,11 +654,14 @@ func processFile(fe fileEntry, fi os.FileInfo, broadcast, startup bool) {
 		role, parent := st.sum.AgentRole, st.sum.ParentSid
 		st.sum = Summary{ID: id, File: fe.path, Source: fe.source, AgentRole: role, ParentSid: parent}
 		st.threadName = false
-		to := size
-		if startup && to > headLimit {
-			to = headLimit
+		st.agentPath = ""
+		st.claudeTask = ""
+		st.metaSeen = false
+		if startup && size > headLimit {
+			parseHead(st, fe.path)
+		} else {
+			parseInto(st, fe.path, 0, size)
 		}
-		parseInto(st, fe.path, 0, to)
 		st.offset = size
 		changed = true
 	}
@@ -668,6 +688,35 @@ func parseInto(st *state, path string, from, to int64) {
 	lines, _ := readLines(path, from, to)
 	for _, ln := range lines {
 		updateSummary(st, ln)
+	}
+}
+
+// parseHead 流式解析文件头部：先吃满 headLimit，若那时还没拿到标题，
+// 就继续往后扫，直到标题出现或触达 headTitleLimit。
+// 标题早早出现的文件仍只付 headLimit 的代价。
+func parseHead(st *state, path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	var read int64
+	for sc.Scan() {
+		raw := bytes.TrimSpace(sc.Bytes())
+		read += int64(len(sc.Bytes())) + 1
+		if len(raw) > 0 {
+			cp := make([]byte, len(raw))
+			copy(cp, raw)
+			updateSummary(st, cp)
+		}
+		if read >= headLimit && st.sum.Title != "" {
+			return
+		}
+		if read >= headTitleLimit {
+			return
+		}
 	}
 }
 
@@ -729,17 +778,20 @@ type codexMeta struct {
 	Timestamp string `json:"timestamp"`
 	Type      string `json:"type"`
 	Payload   struct {
-		Type          string          `json:"type"`
-		ID            string          `json:"id"`
-		Cwd           string          `json:"cwd"`
-		Originator    string          `json:"originator"`
-		CliVersion    string          `json:"cli_version"`
-		ModelProvider string          `json:"model_provider"`
-		AgentRole     string          `json:"agent_role"`
-		AgentNickname string          `json:"agent_nickname"`
-		Model         string          `json:"model"`
-		ThreadName    string          `json:"thread_name"`
-		Message       json.RawMessage `json:"message"`
+		Type           string          `json:"type"`
+		ID             string          `json:"id"`
+		SessionID      string          `json:"session_id"`
+		ParentThreadID string          `json:"parent_thread_id"`
+		Cwd            string          `json:"cwd"`
+		Originator     string          `json:"originator"`
+		CliVersion     string          `json:"cli_version"`
+		ModelProvider  string          `json:"model_provider"`
+		AgentRole      string          `json:"agent_role"`
+		AgentNickname  string          `json:"agent_nickname"`
+		AgentPath      string          `json:"agent_path"`
+		Model          string          `json:"model"`
+		ThreadName     string          `json:"thread_name"`
+		Message        json.RawMessage `json:"message"`
 	} `json:"payload"`
 }
 
@@ -754,6 +806,12 @@ func updateCodexSummary(st *state, raw json.RawMessage) {
 	p := e.Payload
 	switch e.Type {
 	case "session_meta":
+		// 子会话文件里会再追加一条父会话的 session_meta（历史继承）。
+		// setIf 见非空即覆盖，那条会把本会话的 id/cwd 冲成父会话的 —— 只认第一条。
+		if st.metaSeen {
+			return
+		}
+		st.metaSeen = true
 		setIf(&st.sum.Sid, p.ID)
 		setIf(&st.sum.Cwd, p.Cwd)
 		setIf(&st.sum.Originator, p.Originator)
@@ -765,6 +823,22 @@ func updateCodexSummary(st *state, raw json.RawMessage) {
 		if st.sum.Model == "" {
 			setIf(&st.sum.Model, p.ModelProvider)
 		}
+		// 子 agent 会话由父级派发，整个文件没有 user_message，
+		// 标题只能退回父级下发的任务路径（如 /root/l1_enum_quality2）。
+		if p.AgentPath != "" {
+			st.agentPath = p.AgentPath
+			st.sum.AgentPath = p.AgentPath
+			st.sum.Title = trunc(oneline(path.Base(p.AgentPath)), 80)
+		}
+		// 子 agent 的 session_id 恒为根会话（各层级都一样），parent_thread_id 才是直接父级。
+		// 侧栏只做一层折叠，所以按根分组，depth≥2 的孙代理才不会被漏掉。
+		if p.SessionID != "" && p.SessionID != p.ID {
+			st.sum.ParentSid = p.SessionID
+			setIf(&st.sum.DirectParentSid, p.ParentThreadID)
+			if st.sum.AgentRole == "" {
+				st.sum.AgentRole = "subagent"
+			}
+		}
 	case "turn_context":
 		if p.Model != "" {
 			st.sum.Model = p.Model
@@ -774,12 +848,19 @@ func updateCodexSummary(st *state, raw json.RawMessage) {
 		case "user_message":
 			if msg := jsonStr(p.Message); msg != "" && st.sum.Preview == "" {
 				st.sum.Preview = trunc(oneline(msg), 160)
-				if !st.threadName {
+				if st.agentPath == "" && !st.threadName {
 					st.sum.Title = trunc(oneline(msg), 80)
 				}
 			}
+		case "agent_message":
+			// 子 agent 会话没有用户消息可预览，退回它对任务的第一句复述。
+			if st.agentPath != "" && st.sum.Preview == "" {
+				if msg := jsonStr(p.Message); msg != "" {
+					st.sum.Preview = trunc(oneline(msg), 160)
+				}
+			}
 		case "thread_name_updated":
-			if p.ThreadName != "" {
+			if p.ThreadName != "" && st.agentPath == "" {
 				st.sum.Title = trunc(oneline(p.ThreadName), 80)
 				st.threadName = true
 			}
@@ -799,6 +880,8 @@ type claudeMeta struct {
 	SessionId  string `json:"sessionId"`
 	LastPrompt string `json:"lastPrompt"`
 	AiTitle    string `json:"aiTitle"`
+	TeamName   string `json:"teamName"`
+	AgentName  string `json:"agentName"`
 	Message    struct {
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
@@ -818,10 +901,29 @@ func updateClaudeSummary(st *state, raw json.RawMessage) {
 	setIf(&st.sum.Cwd, e.Cwd)
 	setIf(&st.sum.GitBranch, e.GitBranch)
 	setIf(&st.sum.CliVersion, e.Version)
+	// Claude 的 type=agent-name 头事件在 Agent Team 中可能仍是公共 aiTitle。
+	// 只有事件同时携带 teamName 时，agentName 才是 teammate 的真实身份。
+	if team := strings.TrimSpace(e.TeamName); team != "" {
+		st.sum.TeamName = team
+		if name := strings.TrimSpace(e.AgentName); name != "" {
+			st.sum.AgentName = name
+			if name == "team-lead" {
+				st.sum.AgentRole = "team-lead"
+			} else {
+				st.sum.AgentRole = "teammate"
+			}
+		}
+	}
 	switch e.Type {
 	case "user":
 		if e.Message.Role == "user" && st.sum.Preview == "" {
 			if txt := claudeText(e.Message.Content); txt != "" {
+				if st.sum.TeamName != "" {
+					txt = unwrapTeammateMessage(txt)
+					if st.claudeTask == "" {
+						st.claudeTask = txt
+					}
+				}
 				st.sum.Preview = trunc(oneline(txt), 160)
 				if st.sum.Title == "" {
 					st.sum.Title = trunc(oneline(txt), 80)
@@ -833,14 +935,50 @@ func updateClaudeSummary(st *state, raw json.RawMessage) {
 			setIf(&st.sum.Model, e.Message.Model)
 		}
 	case "ai-title":
-		if e.AiTitle != "" { // AI 生成的会话标题，优先采用
-			st.sum.Title = trunc(oneline(e.AiTitle), 80)
+		if e.AiTitle != "" {
+			st.sum.TeamTitle = trunc(oneline(e.AiTitle), 80)
+			if st.sum.TeamName == "" { // 普通会话仍优先采用 AI 标题
+				st.sum.Title = st.sum.TeamTitle
+			}
 		}
 	case "last-prompt":
 		if st.sum.Title == "" && e.LastPrompt != "" {
 			st.sum.Title = trunc(oneline(e.LastPrompt), 80)
 		}
 	}
+	refreshClaudeTitle(st)
+}
+
+// refreshClaudeTitle 固化 Claude 标题优先级：teammate 身份 > 任务 > 公共 aiTitle。
+func refreshClaudeTitle(st *state) {
+	if st.sum.TeamName == "" {
+		return
+	}
+	if st.sum.AgentName != "" {
+		st.sum.Title = trunc(oneline(st.sum.AgentName), 80)
+		return
+	}
+	if st.claudeTask != "" {
+		st.sum.Title = trunc(oneline(st.claudeTask), 80)
+		return
+	}
+	if st.sum.TeamTitle != "" {
+		st.sum.Title = st.sum.TeamTitle
+	}
+}
+
+// unwrapTeammateMessage 去掉 Claude Team 注入的 XML 风格包装，只留下任务正文。
+func unwrapTeammateMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "<teammate-message") {
+		return s
+	}
+	if i := strings.IndexByte(s, '>'); i >= 0 {
+		s = s[i+1:]
+	}
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "</teammate-message>")
+	return strings.TrimSpace(s)
 }
 
 // claudeText 从 Claude 的 content（字符串或块数组）中提取纯文本。
@@ -1390,10 +1528,10 @@ const statsVersion = 4
 
 // SessStat 是单个会话的用量聚合（来自 ccusage）。
 type SessStat struct {
-	Source   string  `json:"source"`  // codex | claude
-	Project  string  `json:"project"` // 项目名（Codex 无项目，归为 —）
-	Model    string  `json:"model"`   // 主力模型
-	Date     string  `json:"date"`    // YYYY-MM-DD（本地时区）
+	Source   string  `json:"source"`   // codex | claude
+	Project  string  `json:"project"`  // 项目名（Codex 无项目，归为 —）
+	Model    string  `json:"model"`    // 主力模型
+	Date     string  `json:"date"`     // YYYY-MM-DD（本地时区）
 	TokIn    int64   `json:"tokIn"`    // 输入 token（不含缓存）
 	TokCache int64   `json:"tokCache"` // 缓存 token（命中读取 + 创建）
 	TokOut   int64   `json:"tokOut"`   // 输出 token
@@ -1403,7 +1541,7 @@ type SessStat struct {
 var (
 	statsMu        sync.Mutex
 	statsList      []SessStat
-	statsAt        int64  // 上次计算完成时间（毫秒）
+	statsAt        int64 // 上次计算完成时间（毫秒）
 	statsComputing bool
 	statsErr       string // 上次计算的错误信息（如 ccusage 不可用）
 )
@@ -1917,10 +2055,10 @@ type GHItem struct {
 	URL       string  `json:"url"`
 	Labels    []Label `json:"labels"`
 	UpdatedAt string  `json:"updatedAt"`
-	State     string  `json:"state"`   // OPEN / CLOSED / MERGED
+	State     string  `json:"state"` // OPEN / CLOSED / MERGED
 	Author    string  `json:"author"`
-	IsDraft   bool    `json:"isDraft"`  // 仅 PR
-	Reason    string  `json:"reason"`   // 仅 PR：author（我创建）/ review（待我 review）
+	IsDraft   bool    `json:"isDraft"` // 仅 PR
+	Reason    string  `json:"reason"`  // 仅 PR：author（我创建）/ review（待我 review）
 	Comments  int     `json:"comments"`
 }
 
@@ -2621,8 +2759,9 @@ func fsHomeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // fsLsHandler 列出指定路径下的子目录。
-//   path=...       绝对路径；默认 $HOME
-//   showHidden=1   是否返回点开头目录
+//
+//	path=...       绝对路径；默认 $HOME
+//	showHidden=1   是否返回点开头目录
 //
 // 过滤掉常见的噪音目录（node_modules / .git 等），上限 500 条避免大目录爆量。
 func fsLsHandler(w http.ResponseWriter, r *http.Request) {
