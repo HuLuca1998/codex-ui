@@ -1386,7 +1386,7 @@ func isPinned(id string) bool {
 // 磁盘，由用户「重新计算」触发刷新。前端自行按日/月/年汇总。
 
 // statsVersion 是用量缓存的格式版本，结构变更时递增以作废旧缓存。
-const statsVersion = 3
+const statsVersion = 4
 
 // SessStat 是单个会话的用量聚合（来自 ccusage）。
 type SessStat struct {
@@ -1573,12 +1573,15 @@ func parseCcusageClaude(data []byte) []SessStat {
 func parseCcusageCodex(data []byte) []SessStat {
 	var d struct {
 		Sessions []struct {
-			InputTokens       int64   `json:"inputTokens"`
-			OutputTokens      int64   `json:"outputTokens"`
-			CachedInputTokens int64   `json:"cachedInputTokens"`
-			CostUSD           float64 `json:"costUSD"`
-			LastActivity      string  `json:"lastActivity"`
-			Models            map[string]struct {
+			InputTokens         int64   `json:"inputTokens"`
+			OutputTokens        int64   `json:"outputTokens"`
+			CacheCreationTokens int64   `json:"cacheCreationTokens"`
+			CacheReadTokens     int64   `json:"cacheReadTokens"`
+			CachedInputTokens   int64   `json:"cachedInputTokens"`
+			TotalTokens         int64   `json:"totalTokens"`
+			CostUSD             float64 `json:"costUSD"`
+			LastActivity        string  `json:"lastActivity"`
+			Models              map[string]struct {
 				TotalTokens int64 `json:"totalTokens"`
 			} `json:"models"`
 		} `json:"sessions"`
@@ -1595,10 +1598,19 @@ func parseCcusageCodex(data []byte) []SessStat {
 				best, model = m.TotalTokens, name
 			}
 		}
+		cache := s.CacheReadTokens + s.CacheCreationTokens
+		if cache == 0 {
+			cache = s.CachedInputTokens
+		}
+		if cache == 0 {
+			if inferred := s.TotalTokens - s.InputTokens - s.OutputTokens; inferred > 0 {
+				cache = inferred
+			}
+		}
 		out = append(out, SessStat{
 			Source: "codex", Project: "—", Model: shortModel(model),
 			Date: ccDate(s.LastActivity), TokIn: s.InputTokens,
-			TokCache: s.CachedInputTokens, TokOut: s.OutputTokens, Cost: s.CostUSD,
+			TokCache: cache, TokOut: s.OutputTokens, Cost: s.CostUSD,
 		})
 	}
 	return out

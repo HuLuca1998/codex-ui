@@ -2011,7 +2011,7 @@ function renderReport(){
   rb.disabled=statsBusy;head.append(rb);
   page.append(head,
     h("div",{class:"text-[10.5px] text-[#54545d] mb-7"},
-      "数据来源 ccusage · 按计费会话去重统计（会话数与左侧列表口径不同）"));
+      "本机 ccusage 日志 · 会话数不等于 OpenAI 请求数 · 总 Token 包含缓存"));
   if(statsErrMsg)
     page.append(h("div",{class:"mb-6 py-3 px-4 rounded-[12px] bg-rose/[0.09] "+
       "ring-1 ring-rose/20 text-rose text-[12px]"},statsErrMsg));
