@@ -1,0 +1,128 @@
+name: Cloud Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cloud-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_SHA:0:7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=Codex-Viewer-${version}-arm64.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release
+        id: existing
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          exists=false
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exists=true
+            echo "Release $VERSION already exists; nothing to publish."
+          fi
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: steps.existing.outputs.exists != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Validate source
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./...
+          go vet ./...
+          bash -n build-mac.sh release.sh dev.sh
+          start="$(grep -n '^<script>$' index.html | tail -1 | cut -d: -f1)"
+          end="$(grep -n '^</script>$' index.html | tail -1 | cut -d: -f1)"
+          sed -n "$((start + 1)),$((end - 1))p" index.html | node --check -
+
+      - name: Build ARM64 app
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          VERSION="$VERSION" ./build-mac.sh --zip
+
+      - name: Verify artifact
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+        run: |
+          set -euo pipefail
+          test -f "$ZIP"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' 'Codex Viewer.app/Contents/Info.plist')" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'Codex Viewer.app/Contents/Info.plist')" = "$VERSION"
+          codesign --verify --deep --strict "Codex Viewer.app"
+          unzip -tq "$ZIP"
+          shasum -a 256 "$ZIP"
+
+      - name: Create GitHub release
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          ZIP: ${{ steps.meta.outputs.zip }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" "$ZIP" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --generate-notes \
+            --latest
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+        run: |
+          {
+            echo "## Cloud Release"
+            echo
+            echo "- Version: \`$VERSION\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            if [[ "$EXISTS" == "true" ]]; then
+              echo "- Result: release already existed"
+            else
+              echo "- Result: ${{ job.status }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
