@@ -23,7 +23,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,15 +38,15 @@ const (
 
 // updateState 当前更新状态（线程安全：用 mu 保护读写）
 type updateState struct {
-	mu       sync.Mutex
-	Status   string `json:"status"`             // idle|checking|up-to-date|available|downloading|ready|error
-	Latest   string `json:"latest,omitempty"`   // 远端最新 tag（如 v0.1.0）
-	URL      string `json:"url,omitempty"`      // release 页面 URL
-	AssetURL string `json:"assetUrl,omitempty"` // zip 下载直链
-	Progress int    `json:"progress,omitempty"` // 0-100
-	Message  string `json:"message,omitempty"`  // error 时的错误信息
-	ReadyApp string `json:"-"`                  // 解压后的 .app 路径（内部用）
-	CheckedAt int64 `json:"checkedAt,omitempty"` // 最近一次检查的 unix ms
+	mu        sync.Mutex
+	Status    string `json:"status"`              // idle|checking|up-to-date|available|downloading|ready|error
+	Latest    string `json:"latest,omitempty"`    // 远端最新 tag（7 位 commit hash）
+	URL       string `json:"url,omitempty"`       // release 页面 URL
+	AssetURL  string `json:"assetUrl,omitempty"`  // zip 下载直链
+	Progress  int    `json:"progress,omitempty"`  // 0-100
+	Message   string `json:"message,omitempty"`   // error 时的错误信息
+	ReadyApp  string `json:"-"`                   // 解压后的 .app 路径（内部用）
+	CheckedAt int64  `json:"checkedAt,omitempty"` // 最近一次检查的 unix ms
 }
 
 var upd updateState
@@ -59,12 +58,12 @@ func (u *updateState) snapshot() map[string]any {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return map[string]any{
-		"status":    u.Status,
-		"latest":    u.Latest,
-		"url":       u.URL,
-		"assetUrl":  u.AssetURL,
-		"progress":  u.Progress,
-		"message":   u.Message,
+		"status":     u.Status,
+		"latest":     u.Latest,
+		"url":        u.URL,
+		"assetUrl":   u.AssetURL,
+		"progress":   u.Progress,
+		"message":    u.Message,
 		"checkedAt":  u.CheckedAt,
 		"current":    version,
 		"currentUrl": currentTagURL(),
@@ -75,15 +74,22 @@ func (u *updateState) snapshot() map[string]any {
 // 注意要和 latest release 的 url 区分：前者跟着 current 版本走，后者永远是最新版。
 // dev 构建没有对应 tag，返回空串。
 func currentTagURL() string {
-	if version == "dev" || version == "" {
+	if isDevVersion(version) {
 		return ""
 	}
 	tag := version
-	// current 可能形如 "v0.1.7-3-gabcdef-dirty"，tag 取第一个 "-" 之前
-	if i := strings.Index(tag, "-"); i >= 0 {
-		tag = tag[:i]
+	// 兼容历史 SemVer 的 git describe 本地构建；hash 正式版本不含连字符。
+	if strings.HasPrefix(strings.ToLower(tag), "v") && strings.Contains(tag, "-g") {
+		if i := strings.Index(tag, "-"); i >= 0 {
+			tag = tag[:i]
+		}
 	}
 	return fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", githubOwner, githubRepo, tag)
+}
+
+func isDevVersion(v string) bool {
+	v = strings.TrimSpace(strings.ToLower(v))
+	return v == "" || v == "dev" || strings.HasPrefix(v, "dev-") || strings.HasSuffix(v, "-dirty")
 }
 
 func (u *updateState) set(fn func(*updateState)) {
@@ -98,7 +104,7 @@ func (u *updateState) set(fn func(*updateState)) {
 
 // startUpdater 在 main 启动末尾调用：dev 版跳过；release 版每 updatePollDur 拉一次。
 func startUpdater() {
-	if version == "dev" {
+	if isDevVersion(version) {
 		upd.set(func(u *updateState) { u.Status = "idle" })
 		return
 	}
@@ -171,10 +177,10 @@ func checkUpdate() error {
 		return nil
 	}
 	// 找当前架构对应的 asset：Codex-Viewer-<ver>-arm64.zip
-	wantArch := runtime.GOARCH                  // arm64 | amd64
-	wantSuffix := "-" + wantArch + ".zip"       // -arm64.zip
+	wantArch := runtime.GOARCH            // arm64 | amd64
+	wantSuffix := "-" + wantArch + ".zip" // -arm64.zip
 	if wantArch == "amd64" {
-		wantSuffix = "-x86_64.zip"             // intel 包按 macOS 习惯命名
+		wantSuffix = "-x86_64.zip" // intel 包按 macOS 习惯命名
 	}
 	var assetURL string
 	for _, a := range rel.Assets {
@@ -195,8 +201,8 @@ func checkUpdate() error {
 		})
 		return nil
 	}
-	// 比较版本
-	if !versionNewer(rel.TagName, version) {
+	// GitHub 的 latest Release 是发布顺序的权威；hash 本身不可比较大小。
+	if !releaseAvailable(rel.TagName, version) {
 		upd.set(func(u *updateState) {
 			u.Latest = rel.TagName
 			u.URL = rel.HTMLURL
@@ -215,41 +221,12 @@ func checkUpdate() error {
 	return nil
 }
 
-// versionNewer 朴素的 semver 比较：去掉 v 前缀，按 . 分段取数字比较
-// 任何无法解析的段当成 0，避免 panic。
-func versionNewer(remote, current string) bool {
-	r := strings.TrimPrefix(strings.TrimPrefix(remote, "v"), "V")
-	c := strings.TrimPrefix(strings.TrimPrefix(current, "v"), "V")
-	// current 形如 "0.1.0-3-gabcdef-dirty"，只比第一个 - 之前
-	if i := strings.Index(c, "-"); i >= 0 {
-		c = c[:i]
-	}
-	rp := strings.Split(r, ".")
-	cp := strings.Split(c, ".")
-	for i := 0; i < 4; i++ {
-		ra := segNum(rp, i)
-		ca := segNum(cp, i)
-		if ra != ca {
-			return ra > ca
-		}
-	}
-	return false
-}
-
-func segNum(parts []string, i int) int {
-	if i >= len(parts) {
-		return 0
-	}
-	// 截断到第一个非数字位
-	s := parts[i]
-	for j, ch := range s {
-		if ch < '0' || ch > '9' {
-			s = s[:j]
-			break
-		}
-	}
-	n, _ := strconv.Atoi(s)
-	return n
+// releaseAvailable 仅比较标识是否相同。纯 commit hash 无法表达先后顺序，
+// 最新性由 GitHub /releases/latest 的发布时间决定。
+func releaseAvailable(remote, current string) bool {
+	remote = strings.TrimSpace(remote)
+	current = strings.TrimSpace(current)
+	return remote != "" && current != "" && !strings.EqualFold(remote, current)
 }
 
 // updateDir 下载/解压的目标目录
@@ -306,7 +283,10 @@ func downloadUpdate() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		upd.set(func(u *updateState) { u.Status = "error"; u.Message = fmt.Sprintf("下载失败：HTTP %d", resp.StatusCode) })
+		upd.set(func(u *updateState) {
+			u.Status = "error"
+			u.Message = fmt.Sprintf("下载失败：HTTP %d", resp.StatusCode)
+		})
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
 	out, err := os.Create(zipPath)
@@ -600,7 +580,7 @@ func versionHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func updateCheckHandler(w http.ResponseWriter, r *http.Request) {
-	if version == "dev" {
+	if isDevVersion(version) {
 		writeJSON(w, map[string]any{"ok": false, "error": "dev 构建跳过更新检查"})
 		return
 	}

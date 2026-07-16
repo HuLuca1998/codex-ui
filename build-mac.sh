@@ -13,11 +13,9 @@ trap 'rm -rf "$TMP"' EXIT
 command -v go      >/dev/null || { echo "✗ 需要 Go";      exit 1; }
 command -v swiftc  >/dev/null || { echo "✗ 需要 Swift（请安装 Xcode Command Line Tools: xcode-select --install）"; exit 1; }
 
-# 版本号决议：环境变量 VERSION > git describe > "dev"
-# 用于 -ldflags -X 注入到 Go 二进制 + 写入 Info.plist
-VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-# 去掉 v 前缀（git tag 习惯带 v，Info.plist 数字版本不带）
-SHORT_VERSION="${VERSION#v}"
+# 正式发布由 release.sh 注入 7 位 commit hash；普通本地打包标为 dev，跳过更新检查。
+VERSION="${VERSION:-dev}"
+SHORT_VERSION="$VERSION"
 echo "  ◆ 版本：$VERSION"
 
 echo "  ◆ 编译后端服务 (Go) ..."

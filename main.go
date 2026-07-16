@@ -44,7 +44,7 @@ var (
 	cfgCache     atomic.Value // 缓存的 Config，由 reloadConfig 刷新
 	cliCodexRoot string       // 命令行参数覆盖的 codex 数据源目录
 	serverToken  string       // 启动时生成；LAN 访问必须携带，loopback 免
-	// version 由打包脚本 ldflags 注入：go build -ldflags "-X main.version=v0.1.0"
+	// version 由发布脚本注入 7 位 commit hash，例如 53a82fa。
 	// 本地 go run 时为 "dev"，跳过更新检查。
 	version = "dev"
 )
@@ -182,7 +182,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 启动更新检查后台轮询（version=="dev" 时跳过）
+	// 启动更新检查后台轮询（开发构建时跳过）
 	startUpdater()
 
 	ln, port := listen()
