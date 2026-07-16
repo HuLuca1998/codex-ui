@@ -247,9 +247,11 @@ tailwind.config={theme:{extend:{
            bg-white/[0.025] ring-1 ring-white/[0.05]; }
   .rcard .rk{ @apply text-[10px] text-[#62626b]; }
   .rcard .rv{ @apply text-[15px] font-semibold text-[#e6e6e8] tabular-nums; }
-  .rbar{ @apply flex-1 min-w-0 max-w-[44px] min-h-[2px] rounded-t-[2px] bg-accent/60
-          hover:bg-accent transition-colors cursor-default; }
-  .rbar.last{ @apply bg-accent; }
+  .rbar{ @apply flex-1 min-w-0 rounded-t-[2px] transition-colors cursor-default; }
+  .rbar.cost{ @apply bg-sand/55 hover:bg-sand; }
+  .rbar.token{ @apply bg-accent/55 hover:bg-accent; }
+  .rbar.last.cost{ @apply bg-sand; }
+  .rbar.last.token{ @apply bg-accent; }
   .pcard{ @apply flex flex-col gap-0.5 px-3 py-2.5 rounded-[12px] cursor-pointer
            bg-white/[0.025] ring-1 ring-white/[0.05] transition hover:bg-white/[0.045]; }
   .pcard.on{ @apply bg-accent/[0.10] ring-accent/40; }
@@ -1957,6 +1959,7 @@ $("#barTitle")?.parentElement?.addEventListener("dblclick",()=>{
 
 /* ── 用量报表（主区域全幅展示） ── */
 let statsRaw=null, statsAt=0, statsBusy=false, statsPeriod="all", sidebarView="list", statsErrMsg="";
+let statsProjectSort="tokTotal", statsModelSort="tokTotal";
 // 切换主区域：会话视图 ⇄ 报表视图
 function setView(v){
   sidebarView=v;
@@ -1997,7 +2000,7 @@ async function recomputeStats(){
 }
 function renderReport(){
   const v=$("#reportMain");v.innerHTML="";
-  const page=h("div",{class:"w-full max-w-[940px] mx-auto px-10 py-9"});
+  const page=h("div",{class:"w-full max-w-[940px] mx-auto px-4 sm:px-10 py-6 sm:py-9"});
   v.append(page);
   const head=h("div",{class:"flex items-center gap-3 mb-1"},
     h("div",{class:"text-[17px] font-semibold text-[#ededf0]"},"用量报表"),
@@ -2021,9 +2024,9 @@ function renderReport(){
   const pl=(periodDefs().find(d=>d.key===statsPeriod)||{}).label||"累计";
   page.append(
     h("div",{class:"rsec",text:"周期概览 · 点选切换下方统计范围"}),reportPeriods(),
-    h("div",{class:"rsec mt-9",text:"用量趋势 · "+pl+" · 按成本"}),reportTrend(pe),
-    h("div",{class:"grid grid-cols-2 gap-5 mt-9"},
-      h("div",{},h("div",{class:"rsec",text:"来源占比 · "+pl}),reportSource(pe)),
+    h("div",{class:"rsec mt-9",text:"用量趋势 · "+pl+" · 金额与 Token"}),reportTrend(pe),
+    h("div",{class:"grid grid-cols-1 lg:grid-cols-2 gap-5 mt-9"},
+      h("div",{},h("div",{class:"rsec",text:"来源占比 · "+pl+" · 金额与 Token"}),reportSource(pe)),
       h("div",{},h("div",{class:"rsec",text:"Top 项目 · "+pl}),reportProjects(pe))),
     h("div",{class:"rsec mt-9",text:"模型用量 · "+pl}),reportModels(pe),
     h("div",{class:"rsec mt-9",text:"Token 与成本 · "+pl}),reportTokens(pe));
@@ -2047,18 +2050,40 @@ function periodEntries(){
   const def=periodDefs().find(d=>d.key===statsPeriod)||periodDefs()[3];
   return statsRaw.filter(e=>e.date&&def.test(e));
 }
+function usageBlank(name){
+  return{name:name||"",sessions:0,cost:0,tokIn:0,tokCache:0,tokOut:0,tokTotal:0};
+}
+function usageAdd(a,e){
+  const ti=Number(e.tokIn)||0,tc=Number(e.tokCache)||0,to=Number(e.tokOut)||0;
+  a.sessions++;a.cost+=Number(e.cost)||0;
+  a.tokIn+=ti;a.tokCache+=tc;a.tokOut+=to;a.tokTotal+=ti+tc+to;
+  return a;
+}
+function usageAgg(entries,name){
+  const a=usageBlank(name);for(const e of entries)usageAdd(a,e);return a;
+}
+function usageTip(label,a){
+  return label+" · "+num(a.sessions)+" 会话 · "+fmtCost(a.cost)+
+    " · 总 Token "+num(a.tokTotal)+"（输入 "+num(a.tokIn)+
+    " / 缓存 "+num(a.tokCache)+" / 输出 "+num(a.tokOut)+"）";
+}
+function usagePct(v,total){
+  if(!(total>0))return"0%";
+  const p=v/total*100;
+  return(p>=10?Math.round(p):Math.round(p*10)/10)+"%";
+}
 // 周期概览：四张卡可点选，点击即驱动下方所有统计
 function reportPeriods(){
-  const grid=h("div",{class:"grid grid-cols-4 gap-3"});
+  const grid=h("div",{class:"grid grid-cols-2 sm:grid-cols-4 gap-3"});
   periodDefs().forEach(def=>{
-    let n=0,cost=0,out=0;
-    for(const e of statsRaw)if(e.date&&def.test(e)){n++;cost+=e.cost;out+=e.tokOut;}
+    const a=usageAgg(statsRaw.filter(e=>e.date&&def.test(e)),def.label);
     grid.append(h("div",{class:"pcard"+(statsPeriod===def.key?" on":""),
-      onclick:()=>{statsPeriod=def.key;renderReport();}},
-      h("div",{class:"rk",text:def.label}),
-      h("div",{class:"rv text-[22px]",style:"color:#84cabb"},fmtCost(cost)),
-      h("div",{class:"text-[10.5px] text-[#62626b] mt-0.5",
-        text:num(n)+" 会话 · 输出 "+fmtTok(out)})));
+      title:usageTip(def.label,a),onclick:()=>{statsPeriod=def.key;renderReport();}},
+      h("div",{class:"text-[10px] text-[#62626b]",text:def.label}),
+      h("div",{class:"text-[22px] font-semibold tabular-nums",style:"color:#d6b878"},fmtCost(a.cost)),
+      h("div",{class:"text-[12px] font-medium text-accent tabular-nums mt-0.5",
+        text:fmtTok(a.tokTotal)+" Token"}),
+      h("div",{class:"text-[10.5px] text-[#62626b] mt-0.5",text:num(a.sessions)+" 会话"})));
   });
   return grid;
 }
@@ -2070,82 +2095,122 @@ function reportTrend(entries){
     if(!e.date)continue;
     const k=byMonth?e.date.slice(0,7):e.date;
     let b=bmap.get(k);
-    if(!b){b={key:k,sessions:0,cost:0,tok:0};bmap.set(k,b);}
-    b.sessions++;b.cost+=e.cost;b.tok+=e.tokIn+e.tokCache+e.tokOut;
+    if(!b){b=usageBlank(k);b.key=k;bmap.set(k,b);}
+    usageAdd(b,e);
   }
   const buckets=[...bmap.values()].sort((a,b)=>a.key<b.key?-1:1);
   if(!buckets.length)return h("div",{class:"text-[12px] text-[#54545d]"},"无数据");
-  const max=Math.max(1e-9,...buckets.map(b=>b.cost));
+  const maxCost=Math.max(0,...buckets.map(b=>b.cost));
+  const maxTok=Math.max(0,...buckets.map(b=>b.tokTotal));
   const bars=h("div",{class:"flex items-end gap-[3px] h-[150px]"});
   buckets.forEach((b,i)=>{
-    const bar=h("div",{class:"rbar"+(i===buckets.length-1?" last":""),
-      title:b.key+"  ·  "+fmtCost(b.cost)+" · "+b.sessions+" 会话 · "+fmtTok(b.tok)+" token"});
-    bar.style.height=Math.max(2,Math.round(b.cost/max*100))+"%";
-    bars.append(bar);
+    const last=i===buckets.length-1?" last":"";
+    const group=h("div",{class:"flex-1 min-w-[4px] max-w-[52px] h-full flex items-end gap-[1px]",
+      title:usageTip(b.key,b)});
+    const cost=h("div",{class:"rbar cost"+last});
+    const tok=h("div",{class:"rbar token"+last});
+    cost.style.height=b.cost>0&&maxCost>0?Math.max(2,Math.round(b.cost/maxCost*100))+"%":"0";
+    tok.style.height=b.tokTotal>0&&maxTok>0?Math.max(2,Math.round(b.tokTotal/maxTok*100))+"%":"0";
+    group.append(cost,tok);bars.append(group);
   });
+  const lg=(c,label,val)=>h("span",{class:"flex items-center gap-1.5"},
+    h("span",{style:"width:6px;height:6px;border-radius:2px;background:"+c}),
+    h("span",{text:label+"峰值 "+val}));
   return h("div",{},bars,
-    h("div",{class:"flex justify-between mt-2 text-[10px] text-[#4a4a52] tabular-nums"},
+    h("div",{class:"flex flex-wrap items-center justify-between gap-y-1 mt-2 text-[10px] text-[#4a4a52] tabular-nums"},
       h("span",{text:buckets[0].key}),
-      h("span",{class:"text-[#62626b]",text:"柱高 = 成本 · 峰值 "+fmtCost(max)}),
+      h("span",{class:"order-3 w-full sm:order-none sm:w-auto flex items-center justify-center gap-3 text-[#62626b]"},
+        lg("#d6b878","金额",fmtCost(maxCost)),lg("#84cabb","Token",fmtTok(maxTok))),
       h("span",{text:buckets[buckets.length-1].key})));
 }
 function reportSource(entries){
-  let cx=0,cl=0;
-  for(const e of entries)e.source==="codex"?cx+=e.cost:cl+=e.cost;
-  const tot=cx+cl||1;
-  const sa=h("div"),sb=h("div");
-  sa.style.cssText="background:#d6b878;width:"+(cx/tot*100)+"%";
-  sb.style.cssText="background:#9aa0e8;width:"+(cl/tot*100)+"%";
+  const cx=usageAgg(entries.filter(e=>e.source==="codex"),"Codex");
+  const cl=usageAgg(entries.filter(e=>e.source!=="codex"),"Claude");
+  const all=usageAgg(entries,"全部来源");
   const dot=c=>{const d=h("span");
     d.style.cssText="width:7px;height:7px;border-radius:50%;flex:none;background:"+c;return d;};
-  const leg=(c,name,vv)=>h("div",{class:"flex items-center gap-2 text-[12px] text-[#9a9aa3]"},
-    dot(c),h("span",{class:"flex-1",text:name}),
-    h("span",{class:"tabular-nums text-[#bdbdc4]",text:fmtCost(vv)}),
-    h("span",{class:"tabular-nums text-[#54545d] w-[44px] text-right",
-      text:Math.round(vv/tot*100)+"%"}));
+  const metricBar=(label,key)=>{
+    const total=all[key],sa=h("div"),sb=h("div");
+    sa.style.cssText="background:#d6b878;width:"+(total>0?cx[key]/total*100:0)+"%";
+    sb.style.cssText="background:#9aa0e8;width:"+(total>0?cl[key]/total*100:0)+"%";
+    return h("div",{class:"flex items-center gap-2"},
+      h("span",{class:"text-[10px] text-[#62626b] w-[38px] flex-none",text:label}),
+      h("div",{class:"flex-1 flex h-[8px] rounded-full overflow-hidden bg-white/[0.04]"},sa,sb));
+  };
+  const leg=(c,a)=>h("div",{class:"flex items-center gap-2 text-[11px] text-[#9a9aa3]",
+    title:usageTip(a.name,a)},
+    dot(c),h("span",{class:"flex-1 text-[12px]",text:a.name}),
+    h("span",{class:"tabular-nums text-[#d6b878] text-right",
+      text:fmtCost(a.cost)+" · "+usagePct(a.cost,all.cost)}),
+    h("span",{class:"tabular-nums text-accent w-[108px] text-right",
+      text:fmtTok(a.tokTotal)+" · "+usagePct(a.tokTotal,all.tokTotal)}));
   return h("div",{class:"rcard !p-4"},
-    h("div",{class:"flex h-[10px] rounded-full overflow-hidden bg-white/[0.04]"},sa,sb),
+    h("div",{class:"flex flex-col gap-2"},metricBar("金额","cost"),metricBar("Token","tokTotal")),
+    h("div",{class:"flex justify-end gap-8 mt-2 text-[9px] text-[#4a4a52]"},
+      h("span",{text:"金额 · 占比"}),h("span",{class:"w-[94px] text-right",text:"Token · 占比"})),
     h("div",{class:"flex flex-col gap-2 mt-3"},
-      leg("#d6b878","Codex",cx),leg("#9aa0e8","Claude",cl)));
+      leg("#d6b878",cx),leg("#9aa0e8",cl)));
 }
-// 通用排行卡：按 keyFn 分组、按成本降序，画横条
-function reportRank(entries,keyFn,limit){
+// 通用排行卡：金额与 Token 始终同时展示，仅切换排序依据。
+function reportRank(entries,keyFn,limit,sortKey,onSort){
   const m=new Map();
   for(const e of entries){
     const k=keyFn(e)||"—";
-    let x=m.get(k);if(!x){x={name:k,cost:0,n:0};m.set(k,x);}
-    x.cost+=e.cost;x.n++;
+    let x=m.get(k);if(!x){x=usageBlank(k);m.set(k,x);}
+    usageAdd(x,e);
   }
-  const arr=[...m.values()].sort((a,b)=>b.cost-a.cost).slice(0,limit);
+  const other=sortKey==="cost"?"tokTotal":"cost";
+  const arr=[...m.values()].sort((a,b)=>b[sortKey]-a[sortKey]||b[other]-a[other]).slice(0,limit);
   if(!arr.length)return h("div",{class:"text-[12px] text-[#54545d]"},"无数据");
-  const max=Math.max(1e-9,...arr.map(x=>x.cost));
+  const maxCost=Math.max(0,...arr.map(x=>x.cost));
+  const maxTok=Math.max(0,...arr.map(x=>x.tokTotal));
   const wrap=h("div",{class:"rcard !p-4 flex flex-col gap-2.5"});
+  const sortBtn=(key,label)=>h("button",{class:"gtab"+(sortKey===key?" on":""),
+    onclick:()=>{onSort(key);renderReport();}},label);
+  wrap.append(h("div",{class:"flex items-center mb-0.5"},
+    h("div",{class:"flex items-center gap-3 text-[9px] text-[#54545d]"},
+      h("span",{class:"flex items-center gap-1.5"},
+        h("span",{style:"width:6px;height:4px;border-radius:2px;background:#d6b878"}),"金额"),
+      h("span",{class:"flex items-center gap-1.5"},
+        h("span",{style:"width:6px;height:4px;border-radius:2px;background:#84cabb"}),"Token")),
+    h("div",{class:"flex-1"}),
+    h("span",{class:"text-[9px] text-[#4a4a52] mr-1.5",text:"排序"}),
+    sortBtn("tokTotal","Token"),sortBtn("cost","金额")));
   arr.forEach(x=>{
-    const fill=h("div",{class:"h-full rounded-full bg-accent/70"});
-    fill.style.width=Math.max(2,x.cost/max*100)+"%";
-    wrap.append(h("div",{class:"flex items-center gap-3"},
-      h("div",{class:"text-[12px] text-[#bdbdc4] truncate w-[160px] flex-none",
-        title:x.name+" · "+x.n+" 会话",text:x.name}),
-      h("div",{class:"flex-1 h-[7px] rounded-full bg-white/[0.04] overflow-hidden"},fill),
-      h("div",{class:"text-[11px] text-[#62626b] tabular-nums w-[64px] text-right flex-none",
-        text:fmtCost(x.cost)})));
+    const costFill=h("div",{class:"h-full rounded-full bg-sand/70"});
+    const tokFill=h("div",{class:"h-full rounded-full bg-accent/70"});
+    costFill.style.width=x.cost>0&&maxCost>0?x.cost/maxCost*100+"%":"0";
+    tokFill.style.width=x.tokTotal>0&&maxTok>0?x.tokTotal/maxTok*100+"%":"0";
+    wrap.append(h("div",{class:"flex items-center gap-3",title:usageTip(x.name,x)},
+      h("div",{class:"text-[12px] text-[#bdbdc4] truncate w-[132px] flex-none",text:x.name}),
+      h("div",{class:"flex-1 flex flex-col gap-[3px]"},
+        h("div",{class:"h-[4px] rounded-full bg-white/[0.04] overflow-hidden"},costFill),
+        h("div",{class:"h-[4px] rounded-full bg-white/[0.04] overflow-hidden"},tokFill)),
+      h("div",{class:"text-[11px] text-[#d6b878] tabular-nums w-[62px] text-right flex-none",
+        text:fmtCost(x.cost)}),
+      h("div",{class:"text-[11px] text-accent tabular-nums w-[72px] text-right flex-none",
+        text:fmtTok(x.tokTotal)})));
   });
   return wrap;
 }
-function reportProjects(entries){return reportRank(entries,e=>e.project,8);}
-function reportModels(entries){return reportRank(entries,e=>e.model,6);}
+function reportProjects(entries){
+  return reportRank(entries,e=>e.project,8,statsProjectSort,k=>statsProjectSort=k);
+}
+function reportModels(entries){
+  return reportRank(entries,e=>e.model,6,statsModelSort,k=>statsModelSort=k);
+}
 function reportTokens(entries){
-  let i=0,c=0,o=0,cost=0;
-  for(const e of entries){i+=e.tokIn;c+=e.tokCache;o+=e.tokOut;cost+=e.cost;}
+  const a=usageAgg(entries,"Token 与成本");
   const card=(label,val,col,tip)=>h("div",{class:"rcard flex-1"},
     h("div",{class:"rk",text:label}),
     h("div",{class:"rv text-[19px]",style:"color:"+col},val),
     h("div",{class:"text-[10px] text-[#54545d] mt-0.5",text:tip}));
-  return h("div",{class:"flex gap-3"},
-    card("输入",fmtTok(i),"#84cabb","新增上下文"),
-    card("缓存读取",fmtTok(c),"#74747e","重复上下文命中"),
-    card("输出",fmtTok(o),"#9aa0e8","模型生成"),
-    card("总成本",fmtCost(cost),"#d6b878","ccusage 估算 USD"));
+  return h("div",{class:"grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3",title:usageTip("合计",a)},
+    card("总 Token",fmtTok(a.tokTotal),"#84cabb",num(a.tokTotal)+" tokens"),
+    card("输入",fmtTok(a.tokIn),"#84cabb","新增上下文"),
+    card("缓存",fmtTok(a.tokCache),"#74747e","创建与读取"),
+    card("输出",fmtTok(a.tokOut),"#9aa0e8","模型生成"),
+    card("总成本",fmtCost(a.cost),"#d6b878","ccusage 估算 USD"));
 }
 $("#tabList").addEventListener("click",()=>setView("list"));
 $("#tabReport").addEventListener("click",()=>setView("report"));
