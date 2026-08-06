@@ -2985,17 +2985,48 @@ function renderRepos(box,c){
   box.append(h("button",{class:"sbtn accent",style:"margin-top:14px",text:"+ 添加仓库",
     onclick:()=>rows.append(repoRow())}));
 }
+// Chrome 账号（profile）下拉。私有仓库往往只有某一个 Google 账号有权限，
+// 不指定账号时 Chrome 会用「上次使用的」那个，打开 issue/PR 直接 404。
+function sChromeProfile(g){
+  const wrap=h("div");
+  function build(profs,loading){
+    wrap.textContent="";
+    const opts=[{v:"",t:"跟随 Chrome 上次使用的账号"}];
+    (profs||[]).forEach(p=>{
+      const who=p.email?(p.name+" — "+p.email):p.name;
+      opts.push({v:p.dir,t:who+"（"+p.dir+"）"+(p.last?" · 上次使用":"")});
+    });
+    const cur=g.browserProfile||"";
+    if(cur&&!opts.some(o=>o.v===cur))opts.push({v:cur,t:cur+"（当前设置）"});
+    wrap.append(sSelect(cur,opts,v=>g.browserProfile=v));
+    if(!loading&&!(profs||[]).length)
+      wrap.append(h("div",{class:"sfdesc",
+        text:"没读到 Chrome 账号列表（未安装 Chrome，或从未启动过）。"}));
+  }
+  build(null,true);
+  fetch("/api/browser/profiles").then(r=>r.json())
+    .then(d=>build(d.profiles,false)).catch(()=>build(null,false));
+  return wrap;
+}
 function renderGeneral(box,c){
   const g=c.general;
   const pathField=sField("自定义浏览器路径","填 .app 完整路径",
     sText(g.browserPath,"/Applications/Xxx.app",v=>g.browserPath=v));
-  function syncPath(){pathField.style.display=g.browser==="custom"?"":"none";}
+  const profField=sField("Chrome 账号（profile）",
+    "多账号 Chrome 里用哪个账号打开链接。私有仓库只在有权限的账号下能进，"+
+    "选定后所有外链都固定用它。仅对 Chrome 系浏览器生效。",
+    sChromeProfile(g));
+  function syncPath(){
+    pathField.style.display=g.browser==="custom"?"":"none";
+    profField.style.display=(g.browser==="chrome"||g.browser==="custom")?"":"none";
+  }
   box.append(
     sField("打开链接用的浏览器","用于打开 issue 等外部链接。",sSelect(g.browser,[
       {v:"chrome",t:"Google Chrome"},{v:"safari",t:"Safari"},
       {v:"default",t:"系统默认"},{v:"custom",t:"自定义…"}],
       v=>{g.browser=v;syncPath();})),
     pathField,
+    profField,
     sField("打开会话用的终端","「继续对话」「详情」按钮用哪个终端。",sSelect(g.terminal,[
       {v:"iterm",t:"iTerm2"},{v:"terminal",t:"Terminal"},{v:"auto",t:"自动"}],
       v=>g.terminal=v)),

@@ -184,6 +184,7 @@ func main() {
 	api("/api/gh/repos", ghReposHandler)
 	api("/api/folder/pick", folderPickHandler)
 	api("/api/open-in-editor", openInEditorHandler)
+	api("/api/browser/profiles", browserProfilesHandler)
 	// GitHub 模块页面：按 state 实时查询 issue / PR + 正文评论详情
 	api("/api/gh/issues", ghPageIssuesHandler)
 	api("/api/gh/prs", ghPagePRsHandler)
@@ -1179,13 +1180,135 @@ func openBrowser(url string) {
 	var c *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		c = exec.Command("open", url)
+		if c = macBrowserCmd(url); c == nil {
+			c = exec.Command("open", url)
+		}
 	case "windows":
 		c = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	default:
 		c = exec.Command("xdg-open", url)
 	}
 	c.Start()
+}
+
+const chromeAppPath = "/Applications/Google Chrome.app"
+
+// macBrowserCmd 按「通用设置」构造 macOS 打开链接的命令；返回 nil 表示
+// 交给系统默认浏览器（`open url`）。
+//
+// 指定了 Chrome 账号时必须直接执行 Chrome 二进制并传 --profile-directory：
+// `open -a Chrome --args …` 在 Chrome 已运行时只会把 URL 转给现有实例，
+// --args 被整段忽略，链接照样落在上次用的账号里。直接跑二进制则由 Chrome
+// 自己做 IPC 转发，能在指定账号的窗口打开（Chrome 未运行时就是正常启动）。
+func macBrowserCmd(url string) *exec.Cmd {
+	g := liveConfig().General
+	appPath := ""
+	switch g.Browser {
+	case "safari":
+		appPath = "/Applications/Safari.app"
+	case "default":
+		return nil
+	case "custom":
+		appPath = strings.TrimSpace(g.BrowserPath)
+	default:
+		appPath = chromeAppPath
+	}
+	if appPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(appPath); err != nil {
+		return nil
+	}
+	if prof := strings.TrimSpace(g.BrowserProfile); prof != "" {
+		if exe := appExecutable(appPath); exe != "" {
+			return exec.Command(exe, "--profile-directory="+prof, url)
+		}
+	}
+	return exec.Command("open", "-a", appPath, url)
+}
+
+// appExecutable 取 .app 包里的主可执行文件路径（先按包名猜，再退回扫目录）。
+func appExecutable(appPath string) string {
+	dir := filepath.Join(appPath, "Contents", "MacOS")
+	guess := filepath.Join(dir, strings.TrimSuffix(filepath.Base(appPath), ".app"))
+	if st, err := os.Stat(guess); err == nil && !st.IsDir() {
+		return guess
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	return ""
+}
+
+// ChromeProfile 是 Chrome 的一个用户配置（俗称「账号 / 人物」）。
+type ChromeProfile struct {
+	Dir   string `json:"dir"`   // 目录名，也是 --profile-directory 的取值："Default" / "Profile 1"
+	Name  string `json:"name"`  // Chrome 里显示的名字
+	Email string `json:"email"` // 登录邮箱；未登录 Google 账号时为空
+	Last  bool   `json:"last"`  // 是否 Chrome 上次使用的账号
+}
+
+// chromeProfiles 读 Chrome 的 Local State，列出本机所有账号。
+// 读不到（没装 Chrome / 格式变了）时返回空列表，前端据此提示手填。
+func chromeProfiles() []ChromeProfile {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(home,
+		"Library/Application Support/Google/Chrome/Local State"))
+	if err != nil {
+		return nil
+	}
+	var ls struct {
+		Profile struct {
+			InfoCache map[string]struct {
+				Name     string `json:"name"`
+				UserName string `json:"user_name"`
+			} `json:"info_cache"`
+			LastUsed string `json:"last_used"`
+		} `json:"profile"`
+	}
+	if json.Unmarshal(b, &ls) != nil {
+		return nil
+	}
+	out := make([]ChromeProfile, 0, len(ls.Profile.InfoCache))
+	for dir, info := range ls.Profile.InfoCache {
+		name := strings.TrimSpace(info.Name)
+		if name == "" {
+			name = dir
+		}
+		out = append(out, ChromeProfile{
+			Dir: dir, Name: name,
+			Email: strings.TrimSpace(info.UserName),
+			Last:  dir == ls.Profile.LastUsed,
+		})
+	}
+	// Default 排最前，其余按 "Profile N" 的序号升序（缺序号的按名字兜底）。
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].Dir, out[j].Dir
+		if (a == "Default") != (b == "Default") {
+			return a == "Default"
+		}
+		na, ea := strconv.Atoi(strings.TrimPrefix(a, "Profile "))
+		nb, eb := strconv.Atoi(strings.TrimPrefix(b, "Profile "))
+		if ea == nil && eb == nil {
+			return na < nb
+		}
+		return a < b
+	})
+	return out
+}
+
+// browserProfilesHandler 给设置页提供 Chrome 账号下拉的候选项。
+func browserProfilesHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"profiles": chromeProfiles()})
 }
 
 // ── 仓库配置与 Issue ────────────────────────────────────────
@@ -1251,10 +1374,11 @@ type IssueConfig struct {
 
 // GeneralConfig 是浏览器 / 终端等通用集成配置。
 type GeneralConfig struct {
-	Browser     string `json:"browser"`     // chrome|safari|default|custom
-	BrowserPath string `json:"browserPath"` // custom 时的 .app 路径
-	Terminal    string `json:"terminal"`    // iterm|terminal|auto
-	ExtraPaths  string `json:"extraPaths"`  // 额外前置到 PATH 的目录（换行/冒号/逗号分隔）；用于让 ccusage 等找到 node/npx/claude
+	Browser        string `json:"browser"`        // chrome|safari|default|custom
+	BrowserPath    string `json:"browserPath"`    // custom 时的 .app 路径
+	BrowserProfile string `json:"browserProfile"` // Chrome 账号目录名（Default / Profile 1…），空=Chrome 上次使用的
+	Terminal       string `json:"terminal"`       // iterm|terminal|auto
+	ExtraPaths     string `json:"extraPaths"`     // 额外前置到 PATH 的目录（换行/冒号/逗号分隔）；用于让 ccusage 等找到 node/npx/claude
 }
 
 // PerfConfig 是扫描与性能相关配置。

@@ -105,6 +105,7 @@ struct MenubarResponse: Decodable {
 struct GeneralCfg: Decodable {
     let browser: String?
     let browserPath: String?
+    let browserProfile: String?   // Chrome 账号目录名（Default / Profile 1…）
 }
 struct StartupCfg: Decodable {
     let launchAtLogin: Bool?
@@ -1332,6 +1333,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             appPath = "/Applications/Google Chrome.app"
         }
         if let ap = appPath, FileManager.default.fileExists(atPath: ap) {
+            let prof = (g?.browserProfile ?? "").trimmingCharacters(in: .whitespaces)
+            if !prof.isEmpty, openWithChromeProfile(url, app: ap, profile: prof) { return }
             NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: ap),
                                     configuration: NSWorkspace.OpenConfiguration()) { _, err in
                 if err != nil { NSWorkspace.shared.open(url) }
@@ -1339,6 +1342,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         } else {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    // 用指定 Chrome 账号打开链接。必须直接执行 Chrome 二进制并传
+    // --profile-directory：NSWorkspace / `open -a` 在 Chrome 已运行时只是把 URL
+    // 转给现有实例，附带的启动参数被整段忽略，链接照样落在上次用的账号里
+    // —— 私有仓库因此会以错误的 GitHub 账号打开。直接跑二进制则由 Chrome
+    // 自己转发到指定账号的窗口（Chrome 未运行时就是正常启动）。
+    // 返回 false 表示没能拉起（调用方回退 NSWorkspace）。
+    private func openWithChromeProfile(_ url: URL, app: String, profile: String) -> Bool {
+        guard let exe = Bundle(path: app)?.executableURL,
+              FileManager.default.isExecutableFile(atPath: exe.path) else { return false }
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = ["--profile-directory=\(profile)", url.absoluteString]
+        do { try p.run() } catch { return false }
+        return true
     }
 
     // 关闭窗口不退出 App —— 菜单栏图标常驻，可随时重新打开。
