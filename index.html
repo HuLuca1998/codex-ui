@@ -235,11 +235,7 @@ tailwind.config={theme:{extend:{
              px-3 py-[7px] outline-none cursor-pointer ring-1 ring-white/[0.04]
              hover:ring-white/[0.09] transition; }
 
-  /* 侧栏视图切换 + 用量报表 */
-  .vtab{ @apply flex-1 text-center text-[12px] py-[6px] rounded-[10px] font-medium
-          text-[#74747e] cursor-pointer transition-all duration-150; }
-  .vtab.on{ @apply text-[#f0f0f3] bg-white/[0.07]; }
-  .vtab:hover:not(.on){ @apply bg-white/[0.035]; }
+  /* 用量报表 / GitHub 内部 tab */
   .gtab{ @apply text-[11px] px-2.5 py-[3px] rounded-[7px] text-[#74747e]
           cursor-pointer transition-all duration-150; }
   .gtab.on{ @apply text-[#f0f0f3] bg-white/[0.07]; }
@@ -294,9 +290,50 @@ body.app .tbstrip{display:block;height:52px;flex:0 0 auto}
   font-family:ui-monospace,Menlo,monospace}
 .think-body .md{color:#9a9aa3;font-size:12.5px}
 
+/* ── 左侧图标菜单栏（rail）：可折叠，折叠后只剩图标 ── */
+#rail{flex:none;display:flex;flex-direction:column;overflow:hidden;
+  width:var(--railw,184px);background:#08080a;
+  border-right:1px solid rgba(255,255,255,.045);
+  transition:width .18s cubic-bezier(.32,.72,0,1)}
+body.rail-collapsed #rail{width:64px}
+.rail-brand{display:flex;align-items:center;gap:10px;padding:14px 14px 10px;min-width:0}
+.rail-mark{flex:none;width:32px;height:32px;border-radius:11px;background:#2f3048;
+  color:#9aa0e8;font-size:15px;font-weight:700;display:grid;place-items:center}
+.rail-hide{min-width:0}
+body.rail-collapsed .rail-hide{display:none!important}
+body.rail-collapsed .rail-brand{justify-content:center;padding:14px 0 10px}
+.navitem{display:flex;align-items:center;gap:10px;height:36px;margin:2px 10px;padding:0 9px;
+  border-radius:11px;color:#8a8a93;cursor:pointer;white-space:nowrap;
+  transition:background .12s,color .12s}
+.navitem:hover{background:rgba(255,255,255,.04);color:#d4d4da}
+.navitem.on{background:rgba(255,255,255,.075);color:#f0f0f3}
+.navitem .ni-ic{flex:none;width:20px;height:20px;display:grid;place-items:center}
+.navitem .ni-ic svg{width:17px;height:17px;display:block}
+.navitem .ni-tx{font-size:12.5px;font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.navitem .ni-n{margin-left:auto;font-size:10.5px;color:#54545d;font-variant-numeric:tabular-nums}
+body.rail-collapsed .navitem{justify-content:center;padding:0;margin:2px 12px}
+.rail-foot{margin-top:auto;padding:8px 10px 12px;display:flex;flex-direction:column;gap:6px}
+.railbtn{display:flex;align-items:center;gap:8px;height:32px;padding:0 9px;border-radius:11px;
+  font-size:12px;font-weight:500;color:#9aa0e8;background:rgba(154,160,232,.12);
+  white-space:nowrap;transition:background .12s}
+.railbtn:hover{background:rgba(154,160,232,.22)}
+body.rail-collapsed .railbtn{justify-content:center;padding:0}
+.rail-tools{display:flex;align-items:center;gap:4px}
+body.rail-collapsed .rail-tools{flex-direction:column;gap:2px}
+.railicon{flex:none;width:28px;height:28px;border-radius:9px;color:#54545d;font-size:13px;
+  display:grid;place-items:center;transition:background .12s,color .12s}
+.railicon:hover{color:#9aa0e8;background:rgba(255,255,255,.05)}
+#railToggle{margin-left:auto}
+body.rail-collapsed #railToggle{margin-left:0}
+#railToggle svg{width:15px;height:15px;transition:transform .18s}
+body.rail-collapsed #railToggle svg{transform:rotate(180deg)}
+/* 报表 / GitHub 是全幅视图：整条会话列表与拖拽条一起收起 */
+body.view-full #sidebar > aside,body.view-full #sbResize{display:none!important}
+
 /* 侧栏宽度走 CSS 变量，由拖拽条改写并存 localStorage。
    规则写在 media query 之前，移动端抽屉的固定宽度才能覆盖它。 */
-#app > aside{width:var(--sbw,272px)}
+#sidebar{flex:none;display:flex;min-width:0}
+#sidebar > aside{flex:none;width:var(--sbw,272px)}
 #sbResize{flex:none;width:5px;cursor:col-resize;background:#0b0b0c;position:relative}
 #sbResize::after{content:"";position:absolute;top:0;bottom:0;left:1px;right:1px;
   border-radius:2px;background:transparent;transition:background .12s}
@@ -319,15 +356,28 @@ body.sb-dragging{cursor:col-resize;user-select:none}
   /* 隐藏 macOS 专属元素：拖拽条占位 + 红绿灯让位空 div */
   .tbstrip,.hide-mobile{display:none!important}
   .only-mobile{display:flex}
-  /* 侧栏改成抽屉：固定在左侧，默认 -translate-x 隐藏 */
-  #app > aside{
+  /* 侧栏（菜单栏 + 会话列表）整体改成抽屉：固定在左侧，默认 -translate-x 隐藏 */
+  #sidebar{
     position:fixed;left:0;top:0;bottom:0;z-index:60;
-    width:min(86vw,332px);
+    width:min(92vw,368px);
     transform:translateX(-100%);
     transition:transform .25s cubic-bezier(.32,.72,0,1);
     box-shadow:6px 0 30px rgba(0,0,0,.5);
   }
-  body.drawer-open #app > aside{transform:translateX(0)}
+  body.drawer-open #sidebar{transform:translateX(0)}
+  /* 抽屉里菜单栏固定窄栏（只剩图标）、会话列表吃掉剩余宽度 */
+  #rail{width:64px!important}
+  #rail .rail-hide{display:none!important}
+  #sidebar > aside{flex:1 1 auto;width:auto!important;min-width:0}
+  /* 报表 / GitHub 没有会话列表 → 菜单栏铺满抽屉，恢复成带文字的完整菜单 */
+  body.view-full #rail{width:100%!important}
+  body.view-full #rail .rail-hide{display:block!important}
+  body.view-full .rail-brand{justify-content:flex-start;padding:14px 14px 10px}
+  body.view-full .navitem{justify-content:flex-start;padding:0 9px;margin:2px 10px}
+  body.view-full .railbtn{justify-content:flex-start;padding:0 9px}
+  body.view-full .rail-tools{flex-direction:row;gap:4px}
+  /* 折叠按钮在抽屉里没有意义 */
+  #railToggle{display:none!important}
   /* 抽屉态下侧栏浮在主区之上，拖拽条无处可拖 */
   #sbResize{display:none!important}
   /* 抽屉遮罩 */
@@ -420,31 +470,84 @@ body.sb-dragging{cursor:col-resize;user-select:none}
 <div id="app" class="h-full w-full flex rounded-[24px] overflow-hidden bg-[#0f0f10]
      ring-1 ring-white/[0.05] shadow-[0_40px_90px_-25px_rgba(0,0,0,.85)]">
 
-  <!-- ── 左侧导航 ── -->
-  <aside class="flex-none flex flex-col overflow-hidden bg-[#0b0b0c]">
+  <!-- ── 左侧：图标菜单栏 + 会话列表（移动端整体作为抽屉滑出） ── -->
+  <div id="sidebar">
+
+  <!-- 菜单栏：报表 / GitHub / Codex / Claude，可折叠成纯图标 -->
+  <nav id="rail">
     <!-- 标题栏拖拽区：系统红绿灯浮于此处（app 模式） -->
     <div class="tbstrip drag-region"></div>
-    <div class="flex items-center gap-3 px-5 pt-5 pb-4">
-      <div class="w-8 h-8 rounded-[11px] bg-[#2f3048] flex items-center justify-center
-                  text-accent text-[15px] font-bold flex-none">C</div>
-      <div class="min-w-0">
-        <div class="text-[13.5px] font-semibold text-[#ededf0]">Session Viewer</div>
+    <div class="rail-brand">
+      <div class="rail-mark">C</div>
+      <div class="rail-hide min-w-0">
+        <div class="text-[13px] font-semibold text-[#ededf0] truncate">Session Viewer</div>
         <div id="rootPath" class="text-[10.5px] text-[#54545d] truncate">扫描中…</div>
       </div>
     </div>
-    <!-- 视图切换：会话列表 / 用量报表 -->
-    <div class="px-3.5 pb-2 flex gap-1">
-      <button id="tabList" class="vtab on">会话</button>
-      <button id="tabReport" class="vtab">报表</button>
-      <button id="tabGithub" class="vtab">GitHub</button>
-    </div>
 
-    <!-- 会话列表视图 -->
+    <button class="navitem" data-view="report" title="用量报表">
+      <span class="ni-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 20h18"/><rect x="5" y="11" width="3.6" height="6" rx="1"/>
+        <rect x="10.2" y="6" width="3.6" height="11" rx="1"/>
+        <rect x="15.4" y="13.5" width="3.6" height="3.5" rx="1"/></svg></span>
+      <span class="ni-tx rail-hide">报表</span>
+    </button>
+
+    <button class="navitem" data-view="github" title="GitHub Issue / PR">
+      <span class="ni-ic"><svg viewBox="0 0 24 24" fill="currentColor">
+        <path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49
+        0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63
+        1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07
+        0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.3 9.3 0 0 1 5 0c1.91-1.33
+        2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68
+        1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.06 10.06 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></span>
+      <span class="ni-tx rail-hide">GitHub</span>
+    </button>
+
+    <button class="navitem" data-view="codex" title="Codex 会话">
+      <span class="ni-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="16" rx="3.5"/>
+        <path d="M7.5 10l2.6 2.2-2.6 2.2M13 14.6h4"/></svg></span>
+      <span class="ni-tx rail-hide">Codex</span>
+      <span class="ni-n rail-hide" data-count="codex"></span>
+    </button>
+
+    <button class="navitem" data-view="claude" title="Claude 会话">
+      <span class="ni-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.7" stroke-linecap="round">
+        <path d="M12 3.2v17.6M4.4 7.4l15.2 9.2M19.6 7.4L4.4 16.6"/></svg></span>
+      <span class="ni-tx rail-hide">Claude</span>
+      <span class="ni-n rail-hide" data-count="claude"></span>
+    </button>
+
+    <div class="rail-foot">
+      <button id="newTaskBtn" class="railbtn"
+        title="新任务：选目录后台跑 Claude / Codex">
+        <span class="ni-ic text-[15px] leading-none">+</span>
+        <span class="rail-hide">新任务</span>
+      </button>
+      <div class="rail-tools">
+        <button id="shareBtn" class="railicon" title="分享 LAN 链接（含 token）">⇪</button>
+        <button id="openSet" class="railicon" title="设置">⚙</button>
+        <button id="railToggle" class="railicon" title="折叠菜单">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5L9 12l5.5 5.5"/></svg>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 会话列表（仅 Codex / Claude 视图显示） -->
+  <aside class="flex flex-col overflow-hidden bg-[#0b0b0c]">
+    <!-- 标题栏拖拽区：与菜单栏顶部对齐（app 模式） -->
+    <div class="tbstrip drag-region"></div>
+
     <div id="listView" class="flex flex-col flex-1 min-h-0">
-      <div class="px-3.5 pb-1 flex gap-1">
-        <button class="dpill on" data-src="all">全部</button>
-        <button class="dpill" data-src="codex">Codex</button>
-        <button class="dpill" data-src="claude">Claude</button>
+      <div class="px-5 pt-4 pb-2.5 flex items-baseline gap-2">
+        <span id="listTitle" class="text-[13.5px] font-semibold text-[#ededf0]">Codex 会话</span>
+        <span id="sCount" class="ml-auto text-[11px] text-[#54545d] tabular-nums">0</span>
       </div>
       <div class="px-3.5 pb-1.5">
         <div class="flex items-center gap-2 px-3 py-2 rounded-[13px] bg-white/[0.035]
@@ -455,7 +558,7 @@ body.sb-dragging{cursor:col-resize;user-select:none}
                    placeholder:text-[#54545d] min-w-0">
         </div>
       </div>
-      <!-- Claude 项目下拉过滤（仅在来源=Claude 时显示） -->
+      <!-- Claude 项目下拉过滤（仅在 Claude 视图显示） -->
       <div id="projwrap" class="px-3.5 pb-1.5" style="display:none">
         <select id="projSel" class="projsel"></select>
       </div>
@@ -465,27 +568,15 @@ body.sb-dragging{cursor:col-resize;user-select:none}
         <button class="dpill" data-range="week">本周</button>
         <button class="dpill" data-range="month">本月</button>
       </div>
-      <div class="px-5 pt-3 pb-1.5 flex items-center">
-        <span class="text-[10.5px] font-semibold tracking-[.12em] text-[#54545d] uppercase">会话</span>
-        <span id="sCount" class="ml-auto text-[10.5px] text-[#54545d] tabular-nums">0</span>
-      </div>
-      <div id="list" class="flex-1 min-h-0 overflow-y-auto py-1"></div>
+      <div id="list" class="flex-1 min-h-0 overflow-y-auto py-1 mt-1.5"></div>
     </div>
 
-    <div class="flex-none px-5 py-3.5 flex items-center gap-2 text-[10.5px] text-[#54545d]
+    <div class="flex-none px-5 py-3 flex items-center gap-2 text-[10.5px] text-[#54545d]
                 border-t border-white/[0.04]">
       <span class="dot live"></span> 实时监听中
-      <button id="newTaskBtn" class="ml-auto flex items-center gap-1 px-2 h-[22px]
-        rounded-[7px] text-[11px] text-accent bg-accent/[0.12] hover:bg-accent/[0.22]
-        transition" title="新任务：选目录后台跑 Claude / Codex">+ 新任务</button>
-      <button id="shareBtn" class="w-[22px] h-[22px] rounded-[7px] text-[12px]
-        text-[#54545d] hover:text-accent hover:bg-white/[0.05] transition
-        flex items-center justify-center" title="分享 LAN 链接（含 token）">⇪</button>
-      <button id="openSet" class="w-[22px] h-[22px] rounded-[7px] text-[13px]
-        text-[#54545d] hover:text-accent hover:bg-white/[0.05] transition
-        flex items-center justify-center" title="设置">⚙</button>
     </div>
   </aside>
+  </div>
 
   <!-- 侧栏拖拽条：双击复位到默认宽度 -->
   <div id="sbResize" title="拖动调整侧栏宽度（双击复位）"></div>
@@ -499,7 +590,7 @@ body.sb-dragging{cursor:col-resize;user-select:none}
       <!-- 桌面 116px 占位（红绿灯让位），移动端隐藏 -->
       <div class="flex-none w-[116px] hdr-spacer"></div>
       <!-- 移动端汉堡按钮：唤出抽屉 -->
-      <button id="menuBtn" class="only-mobile no-drag flex-none" title="会话列表">☰</button>
+      <button id="menuBtn" class="only-mobile no-drag flex-none" title="菜单 / 会话列表">☰</button>
       <div class="flex-1 min-w-0 text-center px-4">
         <div id="barTitle" class="text-[13.5px] font-semibold text-[#ededf0] truncate">Codex Viewer</div>
         <div id="barSub" class="text-[11px] text-[#62626b] truncate mt-[1px]"></div>
@@ -1594,7 +1685,7 @@ async function sendMessage(){
 }
 
 /* ── 侧栏列表 ── */
-let dateFilter="today", srcFilter="all", projectFilter="all", projKey="";
+let dateFilter="today", srcFilter="codex", projectFilter="all", projKey="";
 function claudeProject(s){
   return s.source==="claude"?(String(s.id).split("/")[1]||""):"";
 }
@@ -1706,7 +1797,7 @@ function setSidebarWidth(w,persist){
 (function initSidebarResize(){
   const saved=parseInt(localStorage.getItem(SBW_KEY)||"",10);
   if(Number.isFinite(saved))setSidebarWidth(saved,false);
-  const bar=$("#sbResize"),aside=$("#app > aside");
+  const bar=$("#sbResize"),aside=$("#sidebar > aside");
   if(!bar||!aside)return;
   bar.addEventListener("pointerdown",e=>{
     if(e.button!==0)return;
@@ -1891,6 +1982,16 @@ function renderList(){
   lst.innerHTML="";listShown=0;
   // 会话计数只统计真实 JSONL；虚拟父项不制造一条假会话。
   $("#sCount").textContent=visible.reduce((n,e)=>n+e.realCount,0);
+  // 菜单栏计数：当前日期范围内各来源的会话数（不受搜索框影响）
+  const srcCnt={codex:0,claude:0};
+  for(const s of sessions.values()){
+    if(s.virtualGroup||srcCnt[s.source]===undefined)continue;
+    if(pinned.has(s.id)||inRange(s.mtime))srcCnt[s.source]++;
+  }
+  document.querySelectorAll(".ni-n[data-count]").forEach(el=>{
+    const n=srcCnt[el.dataset.count]||0;
+    el.textContent=n?String(n):"";
+  });
   listChunk();
   while(listShown<listRows.length&&lst.scrollHeight<keepTop+lst.clientHeight+240)listChunk();
   lst.scrollTop=keepTop;
@@ -2061,20 +2162,34 @@ $("#barTitle")?.parentElement?.addEventListener("dblclick",()=>{
 })();
 
 /* ── 用量报表（主区域全幅展示） ── */
-let statsRaw=null, statsAt=0, statsBusy=false, statsPeriod="all", sidebarView="list", statsErrMsg="";
+let statsRaw=null, statsAt=0, statsBusy=false, statsPeriod="all", sidebarView="codex", statsErrMsg="";
 let statsProjectSort="tokTotal", statsModelSort="tokTotal";
-// 切换主区域：会话视图 ⇄ 报表视图
+/* 左侧菜单四个视图：report / github / codex / claude。
+   codex、claude 是会话视图（左会话列表 + 右对话区，来源由视图锁定）；
+   report、github 是全幅视图（收起会话列表）。 */
+const VIEW_KEY="codexui.view";
+const isListView=v=>v==="codex"||v==="claude";
+// 切换主区域：会话视图 ⇄ 报表 / GitHub
 function setView(v){
+  if(!isListView(v)&&v!=="report"&&v!=="github")v="codex";
   sidebarView=v;
+  try{localStorage.setItem(VIEW_KEY,v);}catch(e){}
   const rep=v==="report", gh=v==="github", main=rep||gh;
+  document.body.classList.toggle("view-full",main);
   $("#scroll").classList.toggle("hidden",main);
   $("#reportMain").classList.toggle("hidden",!rep);
   $("#githubMain").classList.toggle("hidden",!gh);
   $("#composer").classList.toggle("hidden",main);
   if(main)$("#jump").classList.add("hidden");
-  $("#tabList").classList.toggle("on",v==="list");
-  $("#tabReport").classList.toggle("on",rep);
-  $("#tabGithub").classList.toggle("on",gh);
+  document.querySelectorAll(".navitem[data-view]").forEach(b=>
+    b.classList.toggle("on",b.dataset.view===v));
+  if(isListView(v)){
+    // 会话列表来源由菜单锁定；Claude 视图额外开放项目下拉
+    srcFilter=v;
+    $("#listTitle").textContent=v==="codex"?"Codex 会话":"Claude 会话";
+    $("#projwrap").style.display=v==="claude"?"block":"none";
+    renderList();
+  }
   if(rep){
     $("#barTitle").textContent="用量报表";
     $("#barSub").textContent="";$("#barStatus").innerHTML="";$("#tokDock").innerHTML="";
@@ -2085,6 +2200,23 @@ function setView(v){
     loadGithub();
   }else drawHeader(); // 恢复当前会话头部
 }
+document.querySelectorAll(".navitem[data-view]").forEach(b=>{
+  b.addEventListener("click",()=>{
+    setView(b.dataset.view);
+    if(document.body.classList.contains("drawer-open")&&!isListView(b.dataset.view))
+      closeDrawer(); // 移动端：点报表/GitHub 直接进主区
+  });
+});
+/* 菜单栏折叠：只留图标，状态持久化 */
+const RAIL_KEY="codexui.railCollapsed";
+function setRailCollapsed(on,persist){
+  document.body.classList.toggle("rail-collapsed",!!on);
+  $("#railToggle").title=on?"展开菜单":"折叠菜单";
+  if(persist)try{localStorage.setItem(RAIL_KEY,on?"1":"0");}catch(e){}
+}
+setRailCollapsed(localStorage.getItem(RAIL_KEY)==="1",false);
+$("#railToggle").addEventListener("click",()=>
+  setRailCollapsed(!document.body.classList.contains("rail-collapsed"),true));
 async function loadStats(){
   try{
     const d=await(await fetch("/api/stats")).json();
@@ -2315,10 +2447,6 @@ function reportTokens(entries){
     card("输出",fmtTok(a.tokOut),"#9aa0e8","模型生成"),
     card("总成本",fmtCost(a.cost),"#d6b878","ccusage 估算 USD"));
 }
-$("#tabList").addEventListener("click",()=>setView("list"));
-$("#tabReport").addEventListener("click",()=>setView("report"));
-$("#tabGithub").addEventListener("click",()=>setView("github"));
-
 /* ── GitHub 模块 ── */
 let ghTab="issues", ghIssueState="open", ghPRState="open", ghMineOnly=false;
 let ghItems=null, ghRepos=[], ghErr="", ghBusy=false, ghLoadSeq=0;
@@ -2653,14 +2781,6 @@ document.querySelectorAll(".dpill[data-range]").forEach(b=>{
     dateFilter=b.dataset.range;
     document.querySelectorAll(".dpill[data-range]").forEach(x=>x.classList.toggle("on",x===b));
     await ensureRange(dateFilter);
-    renderList();
-  });
-});
-document.querySelectorAll(".dpill[data-src]").forEach(b=>{
-  b.addEventListener("click",()=>{
-    srcFilter=b.dataset.src;
-    document.querySelectorAll(".dpill[data-src]").forEach(x=>x.classList.toggle("on",x===b));
-    $("#projwrap").style.display=srcFilter==="claude"?"block":"none";
     renderList();
   });
 });
@@ -3230,7 +3350,9 @@ const _openSessionImpl=openSession;
 window.openSession=function(id){
   if(!id)return;
   if(!$("#settings").classList.contains("hidden"))closeSettings();
-  if(sidebarView!=="list")setView("list");
+  // 会话来源决定该落在哪个菜单下（Codex / Claude），否则列表里根本找不到它
+  const want=sessions.get(id)?.source==="claude"?"claude":"codex";
+  if(sidebarView!==want)setView(want);
   _openSessionImpl(id);
   requestAnimationFrame(()=>{
     const el=document.querySelector('#list .item[data-id="'+id.replace(/"/g,'\\"')+'"]');
@@ -3276,10 +3398,12 @@ document.addEventListener("keydown",e=>{
     return;
   }
   if(typing)return;
-  if(e.key==="/"){ // 聚焦搜索框
-    e.preventDefault();setView("list");$("#q").focus();return;
+  if(e.key==="/"){ // 聚焦搜索框（报表/GitHub 视图先回到会话列表）
+    e.preventDefault();
+    if(!isListView(sidebarView))setView("codex");
+    $("#q").focus();return;
   }
-  if((e.key==="ArrowDown"||e.key==="ArrowUp")&&sidebarView==="list"&&listRows.length){
+  if((e.key==="ArrowDown"||e.key==="ArrowUp")&&isListView(sidebarView)&&listRows.length){
     e.preventDefault();
     const down=e.key==="ArrowDown";
     // 把 listRows 展开成可选中的会话扁平序列（父项 + 展开态下的子项），跳过 divider
@@ -3320,6 +3444,7 @@ async function boot(){
   // app 模式：启用 macOS 窗口布局（标题栏拖拽区 + 系统红绿灯安全区）
   const qs=new URLSearchParams(location.search);
   if(qs.get("app"))document.body.classList.add("app");
+  setView(localStorage.getItem(VIEW_KEY)||"codex"); // 恢复上次停留的菜单
   const deepType=qs.get("type"), deepSid=qs.get("session");
   if(deepType||deepSid){
     // 消费完即从 URL 移除，避免刷新/分享时被反复触发
@@ -3348,7 +3473,12 @@ async function boot(){
       if(deepType&&deepSid)
         $("#rootPath").textContent="未找到分享的会话（可能已被删除或归档）";
     }
-    if(target)openSession(target.id);
+    // 预选会话会把视图拉到该会话所属菜单；若启动时停在报表/GitHub，选完切回去
+    if(target){
+      const back=isListView(sidebarView)?"":sidebarView;
+      openSession(target.id);
+      if(back)setView(back);
+    }
   }catch(e){$("#rootPath").textContent="加载失败";}
   // 初始化"后端运行中"状态（SSE 重连后由服务端事件持续维护）
   try{
