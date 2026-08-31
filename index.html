@@ -2939,8 +2939,20 @@ async function ensureGhReposDatalist(){
   })();
   return __ghReposLoading;
 }
+// gh Project 看板列表按 owner 缓存 —— 多行仓库共用，避免重复调 gh
+const __ghProjCache={};
+function ghProjects(owner){
+  if(!owner)return Promise.resolve([]);
+  if(!__ghProjCache[owner])__ghProjCache[owner]=(async()=>{
+    try{
+      const d=await(await fetch("/api/gh/projects?owner="+encodeURIComponent(owner))).json();
+      return (d.ok&&Array.isArray(d.projects))?d.projects:[];
+    }catch(e){return [];}
+  })();
+  return __ghProjCache[owner];
+}
 function repoRow(rm){
-  rm=rm||{repo:"",localPath:"",branch:"",watch:true};
+  rm=rm||{repo:"",localPath:"",branch:"",watch:true,project:0};
   const dlId="bl"+Math.random().toString(36).slice(2,8);
   const dl=h("datalist",{id:dlId});
   // repo input：聚焦时拉 gh repos 充 datalist；未登录 gh 时降级为纯文本输入
@@ -2965,6 +2977,35 @@ function repoRow(rm){
   const branchIn=h("input",{class:"setin",value:rm.branch||"",placeholder:"主分支",list:dlId});
   let watch=rm.watch!==false;  // 缺省视为关注
   const watchTog=sToggle(watch,v=>{watch=v;syncRepos();});
+  // Project 看板：选中后菜单栏 issue 照搬该看板的条目顺序
+  let project=parseInt(rm.project||0,10)||0;
+  const projSel=h("select",{class:"setin"});
+  projSel.style.width="100%";
+  projSel.addEventListener("change",()=>{
+    project=parseInt(projSel.value||"0",10)||0;syncRepos();});
+  function fillProjects(list){
+    projSel.innerHTML="";
+    projSel.append(h("option",{value:"0",text:"不排序 — 按更新时间倒序"}));
+    let found=false;
+    (list||[]).forEach(pr=>{
+      projSel.append(h("option",{value:String(pr.number),
+        text:"#"+pr.number+" — "+(pr.title||"")}));
+      if(pr.number===project)found=true;
+    });
+    if(project>0&&!found)
+      projSel.append(h("option",{value:String(project),text:"#"+project}));
+    projSel.value=String(project);
+  }
+  let projOwner=null;
+  async function loadProjects(){
+    const owner=(repoIn.value.trim().split("/")[0]||"");
+    if(owner===projOwner)return;
+    projOwner=owner;
+    fillProjects([]);                       // 先占位，拉到再重填
+    fillProjects(await ghProjects(owner));
+  }
+  repoIn.addEventListener("change",loadProjects);
+  loadProjects();
   async function loadBranches(){
     dl.innerHTML="";
     const p=pathIn.value.trim();
@@ -2987,11 +3028,18 @@ function repoRow(rm){
     h("div",{class:"flex items-center gap-3"},
       h("span",{class:"setlbl",text:"分支"}),branchIn,dl),
     h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:"看板"}),projSel),
+    h("div",{class:"flex items-center gap-3"},
+      h("span",{class:"setlbl",text:""}),
+      h("span",{class:"sfdesc",style:"margin:0",
+        text:"选中 Project 看板后，菜单栏 issue 照搬看板里的条目顺序；"+
+             "不在看板里的排最后（按更新时间）"})),
+    h("div",{class:"flex items-center gap-3"},
       h("span",{class:"setlbl",text:"关注"}),watchTog,
       h("span",{class:"sfdesc",style:"margin:0",
         text:"开启后纳入菜单栏 issue / PR 汇总"})));
   row._get=()=>({repo:repoIn.value.trim(),localPath:pathIn.value.trim(),
-    branch:branchIn.value.trim(),watch:watch});
+    branch:branchIn.value.trim(),watch:watch,project:project});
   return row;
 }
 function syncRepos(){
@@ -3098,7 +3146,8 @@ function renderIssue(box,c){
 function renderRepos(box,c){
   box.append(h("div",{class:"sfdesc",style:"margin-bottom:14px",
     text:"关联 GitHub 仓库与本地代码。开启「关注」的仓库会纳入菜单栏的 issue / PR "+
-         "汇总；本地路径供「详情」按钮在对应目录里执行命令。"}));
+         "汇总；本地路径供「详情」按钮在对应目录里执行命令；"+
+         "选中 Project 看板后菜单栏 issue 按看板顺序排。"}));
   const rows=h("div",{class:"flex flex-col gap-3",id:"repoRows"});
   (c.repos||[]).forEach(rm=>rows.append(repoRow(rm)));
   box.append(rows);

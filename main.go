@@ -182,6 +182,7 @@ func main() {
 	api("/api/restart", restartHandler)
 	// 仓库设置：gh repos 下拉 + Finder 选目录
 	api("/api/gh/repos", ghReposHandler)
+	api("/api/gh/projects", ghProjectsHandler)
 	api("/api/folder/pick", folderPickHandler)
 	api("/api/open-in-editor", openInEditorHandler)
 	api("/api/browser/profiles", browserProfilesHandler)
@@ -1318,7 +1319,8 @@ type RepoMap struct {
 	Repo      string `json:"repo"` // owner/name
 	LocalPath string `json:"localPath"`
 	Branch    string `json:"branch"`
-	Watch     bool   `json:"watch"` // 是否关注（菜单栏 issue/PR 仅汇总关注的仓库）
+	Watch     bool   `json:"watch"`   // 是否关注（菜单栏 issue/PR 仅汇总关注的仓库）
+	Project   int    `json:"project"` // GitHub Project 看板编号；>0 时 issue 照搬看板顺序
 }
 
 // UnmarshalJSON 让缺省的 watch 字段视为「关注」，兼容升级前的旧配置。
@@ -2017,20 +2019,111 @@ func ghIssues(repo string, ic IssueConfig) ([]Issue, error) {
 	return list, nil
 }
 
+// repoOwner 从 owner/name 里取 owner（GitHub Project 看板挂在 owner 下）。
+func repoOwner(repo string) string {
+	if i := strings.IndexByte(repo, '/'); i > 0 {
+		return repo[:i]
+	}
+	return repo
+}
+
+// issueKey 是 issue 在看板顺序表里的键：owner/repo#number。
+func issueKey(repo string, number int) string {
+	return repo + "#" + strconv.Itoa(number)
+}
+
+// ghProjectOrder 拉某个 GitHub Project 看板的条目，返回
+// 「owner/repo#number → 看板中的位置」，位置越小在看板里越靠前。
+// 一个看板可以跨仓库，故键里带仓库名。
+func ghProjectOrder(owner string, number int) (map[string]int, error) {
+	sh := "gh " + shellJoin([]string{"project", "item-list", strconv.Itoa(number),
+		"--owner", owner, "--format", "json", "--limit", "500"})
+	cmd := exec.Command("/bin/zsh", "-lc", sh)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	var raw struct {
+		Items []struct {
+			Content struct {
+				Number     int    `json:"number"`
+				Repository string `json:"repository"` // owner/name
+			} `json:"content"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, err
+	}
+	order := make(map[string]int, len(raw.Items))
+	for i, it := range raw.Items {
+		c := it.Content
+		if c.Number == 0 || c.Repository == "" {
+			continue // 草稿条目没有对应 issue
+		}
+		k := issueKey(c.Repository, c.Number)
+		if _, dup := order[k]; !dup {
+			order[k] = i
+		}
+	}
+	return order, nil
+}
+
+// sortIssues 排 issue 列表：进了 Project 看板的照搬看板顺序（多仓库时先按
+// 配置里的仓库顺序分组），没进看板的按更新时间倒序垫底。
+// order 为空时退化成纯更新时间倒序 —— 即未配置看板时的老行为。
+func sortIssues(all []Issue, order, repoIdx map[string]int) {
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		pa, oka := order[issueKey(a.Repo, a.Number)]
+		pb, okb := order[issueKey(b.Repo, b.Number)]
+		if oka != okb {
+			return oka // 在看板里的排前面
+		}
+		if oka {
+			if ra, rb := repoIdx[a.Repo], repoIdx[b.Repo]; ra != rb {
+				return ra < rb
+			}
+			return pa < pb
+		}
+		return a.UpdatedAt > b.UpdatedAt
+	})
+}
+
 // refreshIssues 遍历关注的仓库，刷新内存里的 issue 缓存。
 func refreshIssues() {
 	cfg := liveConfig()
 	var all []Issue
 	var errs []string
-	for _, rm := range watchedRepos() {
+	order := map[string]int{}   // issueKey → 看板位置
+	repoIdx := map[string]int{} // 仓库 → 配置里的顺序
+	for i, rm := range watchedRepos() {
+		repoIdx[rm.Repo] = i
 		got, err := ghIssues(rm.Repo, cfg.Issue)
 		if err != nil {
 			errs = append(errs, rm.Repo+": "+err.Error())
 			continue
 		}
 		all = append(all, got...)
+		if rm.Project <= 0 {
+			continue
+		}
+		po, perr := ghProjectOrder(repoOwner(rm.Repo), rm.Project)
+		if perr != nil {
+			// 看板拉失败不影响 issue 列表本身，退回更新时间排序即可
+			errs = append(errs, fmt.Sprintf("%s Project #%d: %s", rm.Repo, rm.Project, perr))
+			continue
+		}
+		for k, v := range po {
+			order[k] = v
+		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].UpdatedAt > all[j].UpdatedAt })
+	sortIssues(all, order, repoIdx)
 
 	issuesMu.Lock()
 	issues = all
@@ -2747,6 +2840,48 @@ func rescanHandler(w http.ResponseWriter, r *http.Request) {
 // ghReposHandler 列出当前 gh 登录账号下的全部仓库（前端仓库设置下拉用）
 // 个人仓库 + 所属组织仓库一并返回，按 nameWithOwner 去重
 // 不要求 gh 登录态：未登录时返回 ok:false，前端降级到原文本输入
+// ghProjectsHandler 列出某 owner 名下的 GitHub Project 看板（供设置页下拉选）。
+func ghProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
+	if owner == "" {
+		writeJSON(w, map[string]any{"ok": false, "error": "缺少 owner"})
+		return
+	}
+	sh := "gh " + shellJoin([]string{"project", "list", "--owner", owner,
+		"--format", "json", "--limit", "100"})
+	cmd := exec.Command("/bin/zsh", "-lc", sh)
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		writeJSON(w, map[string]any{"ok": false, "error": "gh project list 失败：" + msg})
+		return
+	}
+	var raw struct {
+		Projects []struct {
+			Number int    `json:"number"`
+			Title  string `json:"title"`
+			Closed bool   `json:"closed"`
+		} `json:"projects"`
+	}
+	if jerr := json.Unmarshal(out, &raw); jerr != nil {
+		writeJSON(w, map[string]any{"ok": false, "error": "解析 gh 输出失败"})
+		return
+	}
+	list := make([]map[string]any, 0, len(raw.Projects))
+	for _, p := range raw.Projects {
+		if p.Closed {
+			continue
+		}
+		list = append(list, map[string]any{"number": p.Number, "title": p.Title})
+	}
+	writeJSON(w, map[string]any{"ok": true, "projects": list})
+}
+
 func ghReposHandler(w http.ResponseWriter, r *http.Request) {
 	const fields = "nameWithOwner,description,isPrivate"
 	// listRepos 拉某个 owner（空 = 个人账号）下的仓库

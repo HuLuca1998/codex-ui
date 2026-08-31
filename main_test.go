@@ -217,3 +217,73 @@ func assertCodexTokenUsage(t *testing.T, got SessStat, wantIn, wantCache, wantOu
 		t.Fatalf("total tokens = %d, want %d; stat: %+v", total, wantTotal, got)
 	}
 }
+
+// 菜单栏 issue 排序：配了 Project 看板的仓库照搬看板顺序。
+func TestSortIssues_FollowsProjectBoardOrder(t *testing.T) {
+	all := []Issue{
+		{Repo: "o/a", Number: 10, UpdatedAt: "2026-08-30T00:00:00Z"}, // 看板第 2 位，但最新
+		{Repo: "o/a", Number: 20, UpdatedAt: "2026-08-01T00:00:00Z"}, // 看板第 0 位
+		{Repo: "o/a", Number: 30, UpdatedAt: "2026-08-20T00:00:00Z"}, // 不在看板里
+		{Repo: "o/a", Number: 40, UpdatedAt: "2026-08-10T00:00:00Z"}, // 看板第 1 位
+	}
+	order := map[string]int{"o/a#20": 0, "o/a#40": 1, "o/a#10": 2}
+	sortIssues(all, order, map[string]int{"o/a": 0})
+
+	var got []int
+	for _, it := range all {
+		got = append(got, it.Number)
+	}
+	// 看板顺序 20 → 40 → 10，看板外的 30 垫底
+	want := []int{20, 40, 10, 30}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("issue 顺序 = %v, want %v", got, want)
+		}
+	}
+}
+
+// 多仓库时：先按配置里的仓库顺序分组，组内才是看板顺序；
+// 没进看板的一律垫底，按更新时间倒序。
+func TestSortIssues_GroupsByConfiguredRepoThenBoard(t *testing.T) {
+	all := []Issue{
+		{Repo: "o/b", Number: 1, UpdatedAt: "2026-08-31T00:00:00Z"},
+		{Repo: "o/a", Number: 2, UpdatedAt: "2026-08-02T00:00:00Z"},
+		{Repo: "o/c", Number: 3, UpdatedAt: "2026-08-15T00:00:00Z"}, // 无看板
+		{Repo: "o/c", Number: 4, UpdatedAt: "2026-08-25T00:00:00Z"}, // 无看板
+		{Repo: "o/a", Number: 5, UpdatedAt: "2026-08-01T00:00:00Z"},
+	}
+	order := map[string]int{"o/a#5": 0, "o/a#2": 1, "o/b#1": 0}
+	sortIssues(all, order, map[string]int{"o/a": 0, "o/b": 1, "o/c": 2})
+
+	var got []int
+	for _, it := range all {
+		got = append(got, it.Number)
+	}
+	want := []int{5, 2, 1, 4, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("issue 顺序 = %v, want %v", got, want)
+		}
+	}
+}
+
+// 没有任何仓库配看板时，维持原来的更新时间倒序。
+func TestSortIssues_NoBoardKeepsUpdatedAtOrder(t *testing.T) {
+	all := []Issue{
+		{Repo: "o/a", Number: 1, UpdatedAt: "2026-08-01T00:00:00Z"},
+		{Repo: "o/a", Number: 2, UpdatedAt: "2026-08-31T00:00:00Z"},
+		{Repo: "o/b", Number: 3, UpdatedAt: "2026-08-15T00:00:00Z"},
+	}
+	sortIssues(all, map[string]int{}, map[string]int{"o/a": 0, "o/b": 1})
+
+	var got []int
+	for _, it := range all {
+		got = append(got, it.Number)
+	}
+	want := []int{2, 3, 1}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("issue 顺序 = %v, want %v", got, want)
+		}
+	}
+}
